@@ -383,6 +383,10 @@ function TableViewer({ tab, onLoadPage }: {
           <span className="text-white/40 text-sm">({tab.total} 行)</span>
         </div>
         
+        <span className="text-xs text-white/30 flex items-center gap-1">
+          <Pin size={12} /> 点击列头图钉可固定列
+        </span>
+        
         {/* 分页控制 */}
         <div className="flex items-center gap-2 ml-auto">
           <button
@@ -405,69 +409,14 @@ function TableViewer({ tab, onLoadPage }: {
         </div>
       </div>
 
-      {/* 数据表格 - 使用绝对定位确保滚动 */}
+      {/* 数据表格 - 使用 DataTable 组件支持列固定 */}
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-        <div style={{ 
-          position: 'absolute', 
-          top: 0, 
-          left: 0, 
-          right: 0, 
-          bottom: 0, 
-          overflow: 'auto' 
-        }}>
-          <table className="text-sm border-collapse" style={{ minWidth: 'max-content' }}>
-            <thead className="sticky top-0 z-10">
-              <tr>
-                {tab.columns.map((col, i) => (
-                  <th 
-                    key={i} 
-                    className="px-4 py-2 text-left font-medium border-b border-metro-border whitespace-nowrap"
-                    style={{ background: '#2d2d2d' }}
-                    title={col.comment ? `${col.name}\n类型: ${col.type}\n备注: ${col.comment}` : `${col.name}\n类型: ${col.type}`}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      {col.key === 'PRI' && <Key size={12} className="text-accent-orange" />}
-                      <span className="text-accent-blue">{col.name}</span>
-                      <span className="text-white/30 font-normal text-xs">({col.type})</span>
-                      {col.comment && (
-                        <span className="text-accent-green text-xs" title={col.comment}>
-                          <Info size={12} />
-                        </span>
-                      )}
-                    </div>
-                    {col.comment && (
-                      <div className="text-xs text-white/40 font-normal mt-0.5 max-w-[200px] truncate">
-                        {col.comment}
-                      </div>
-                    )}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {tab.data.map((row, i) => (
-                <tr key={i} className="hover:bg-metro-surface/50">
-                  {tab.columns.map((col, j) => (
-                    <td key={j} className="px-4 py-1.5 border-b border-metro-border/50 font-mono text-white/80 whitespace-nowrap">
-                      {row[col.name] === null ? (
-                        <span className="text-white/30 italic">NULL</span>
-                      ) : typeof row[col.name] === 'object' ? (
-                        <span className="text-accent-purple">{JSON.stringify(row[col.name])}</span>
-                      ) : (
-                        String(row[col.name])
-                      )}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          
-          {tab.data.length === 0 && (
-            <div className="h-32 flex items-center justify-center text-white/30">
-              暂无数据
-            </div>
-          )}
+        <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
+          <DataTable 
+            columns={tab.columns} 
+            data={tab.data} 
+            showColumnInfo={true}
+          />
         </div>
       </div>
     </div>
@@ -569,4 +518,147 @@ function QueryEditor({ tab, databases, tables, columns, onRun, onUpdateSql, onUp
       sqlContent += `INSERT INTO \`${tableName}\` (\`${columns.join('`, `')}\`) VALUES (${values});\n`
     })
     
-    const blob = n
+    const blob = new Blob([sqlContent], { type: 'text/plain;charset=utf-8' })
+    saveAs(blob, `query_results_${Date.now()}.sql`)
+  }
+
+  // 导出下拉菜单状态
+  const [showExportMenu, setShowExportMenu] = useState(false)
+
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      {/* SQL 编辑区 */}
+      <div style={{ height: '200px', flexShrink: 0, display: 'flex', flexDirection: 'column', borderBottom: '1px solid #5d5d5d' }}>
+        <div className="h-10 bg-metro-bg flex items-center px-2 gap-2" style={{ flexShrink: 0 }}>
+          <button
+            onClick={handleRun}
+            className="h-7 px-4 bg-accent-green hover:bg-accent-green/90 flex items-center gap-1.5 text-sm transition-colors"
+            title="执行 SQL (Ctrl+Enter)"
+          >
+            <Play size={14} fill="currentColor" />
+            执行
+          </button>
+          
+          <div className="w-px h-5 bg-white/20 mx-1" />
+          
+          <button
+            onClick={handleOpenFile}
+            className="h-7 px-3 bg-metro-surface hover:bg-metro-surface/80 flex items-center gap-1.5 text-sm transition-colors"
+            title="打开 SQL 文件 (Ctrl+O)"
+          >
+            <FolderOpen size={14} />
+            打开
+          </button>
+          
+          <button
+            onClick={handleSaveFile}
+            className="h-7 px-3 bg-metro-surface hover:bg-metro-surface/80 flex items-center gap-1.5 text-sm transition-colors"
+            title="保存 SQL 文件 (Ctrl+S)"
+          >
+            <Save size={14} />
+            保存
+          </button>
+          
+          <button
+            onClick={handleFormat}
+            className="h-7 px-3 bg-metro-surface hover:bg-metro-surface/80 flex items-center gap-1.5 text-sm transition-colors"
+            title="格式化 SQL (Ctrl+Shift+F)"
+          >
+            <AlignLeft size={14} />
+            格式化
+          </button>
+          
+          <div className="w-px h-5 bg-white/20 mx-1" />
+          
+          {/* 导出按钮 */}
+          <div className="relative">
+            <button
+              onClick={() => setShowExportMenu(!showExportMenu)}
+              className="h-7 px-3 bg-metro-surface hover:bg-metro-surface/80 flex items-center gap-1.5 text-sm transition-colors"
+              title="导出结果"
+              disabled={!tab.results || tab.results.rows.length === 0}
+            >
+              <Download size={14} />
+              导出
+            </button>
+            {showExportMenu && (
+              <div className="absolute top-full left-0 mt-1 bg-metro-surface border border-metro-border rounded shadow-lg z-50 min-w-[140px]">
+                <button
+                  onClick={() => { handleExportExcel(); setShowExportMenu(false) }}
+                  className="w-full px-3 py-2 text-left text-sm hover:bg-accent-blue/20 flex items-center gap-2"
+                >
+                  <FileSpreadsheet size={14} className="text-accent-green" />
+                  导出 Excel
+                </button>
+                <button
+                  onClick={() => { handleExportSql(); setShowExportMenu(false) }}
+                  className="w-full px-3 py-2 text-left text-sm hover:bg-accent-blue/20 flex items-center gap-2"
+                >
+                  <FileCode size={14} className="text-accent-orange" />
+                  导出 SQL
+                </button>
+              </div>
+            )}
+          </div>
+          
+          <span className="text-xs text-white/40 ml-auto">
+            {filePath && <span className="mr-3 text-accent-blue">{filePath.split(/[/\\]/).pop()}</span>}
+            Ctrl+Enter 执行 | Ctrl+S 保存 | Ctrl+Shift+F 格式化
+          </span>
+        </div>
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <SqlEditor
+            value={sql}
+            onChange={setSql}
+            onRun={handleRun}
+            onSave={handleSaveFile}
+            onOpen={handleOpenFile}
+            onFormat={handleFormat}
+            databases={databases}
+            tables={tables}
+            columns={columns}
+          />
+        </div>
+      </div>
+
+      {/* 结果区 - 使用 DataTable 组件支持列固定 */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        <div className="h-9 bg-metro-bg flex items-center px-3 border-b border-metro-border" style={{ flexShrink: 0 }}>
+          <span className="text-sm text-white/60">
+            结果
+            {tab.results && <span className="ml-2 text-white/40">({tab.results.rows.length} 行)</span>}
+          </span>
+          {tab.results && tab.results.rows.length > 0 && (
+            <span className="text-xs text-white/30 ml-4 flex items-center gap-1">
+              <Pin size={12} /> 点击列头图钉可固定列
+            </span>
+          )}
+        </div>
+        
+        <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
+            {tab.results ? (
+              <DataTable 
+                columns={tab.results.columns.map(col => {
+                  const colInfo = findColumnInfo(col)
+                  return {
+                    name: col,
+                    type: colInfo?.type,
+                    key: colInfo?.key,
+                    comment: colInfo?.comment,
+                  }
+                })}
+                data={tab.results.rows}
+                showColumnInfo={true}
+              />
+            ) : (
+              <div className="h-full flex items-center justify-center text-white/30">
+                执行查询以查看结果
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
