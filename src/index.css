@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: #1f1f1f;
+  color: #ffffff;
+  overflow: hidden;
+}
+
+/* Metro 风格滚动条 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #5d5d5d;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #6d6d6d;
+}
+
+/* 拖拽区域 */
+.drag { -webkit-app-region: drag; }
+.no-drag { -webkit-app-region: no-drag; }
+
+/* Metro 输入框 */
+input, textarea, select {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
+
+input:focus, textarea:focus {
+  outline: none;
+}
+
+/* Metro 按钮悬停 */
+.metro-btn {
+  transition: background-color 0.1s ease;
+}
