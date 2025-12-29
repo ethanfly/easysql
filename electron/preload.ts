@@ -30,5 +30,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   backupDatabase: (id: string, database: string) => ipcRenderer.invoke('db:backup', id, database),
   exportTable: (id: string, database: string, tableName: string, format: 'excel' | 'sql' | 'csv') => 
     ipcRenderer.invoke('db:exportTable', id, database, tableName, format),
+  
+  // 数据编辑
+  updateRow: (id: string, database: string, tableName: string, primaryKey: { column: string; value: any }, updates: Record<string, any>) =>
+    ipcRenderer.invoke('db:updateRow', id, database, tableName, primaryKey, updates),
+  deleteRow: (id: string, database: string, tableName: string, primaryKey: { column: string; value: any }) =>
+    ipcRenderer.invoke('db:deleteRow', id, database, tableName, primaryKey),
 })
 

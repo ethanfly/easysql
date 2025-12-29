@@ -32,6 +32,11 @@ declare global {
       backupDatabase: (id: string, database: string) => Promise<{ success?: boolean; path?: string; error?: string; cancelled?: boolean }>
       exportTable: (id: string, database: string, tableName: string, format: 'excel' | 'sql' | 'csv') => 
         Promise<{ success?: boolean; path?: string; error?: string; cancelled?: boolean }>
+      // 数据编辑
+      updateRow: (id: string, database: string, tableName: string, primaryKey: { column: string; value: any }, updates: Record<string, any>) =>
+        Promise<{ success?: boolean; error?: string }>
+      deleteRow: (id: string, database: string, tableName: string, primaryKey: { column: string; value: any }) =>
+        Promise<{ success?: boolean; error?: string }>
     }
   }
 }
@@ -100,6 +105,33 @@ export default function App() {
     })
     if (activeConnection === id) {
       setActiveConnection(null)
+      setDatabases([])
+      setSelectedDatabase(null)
+      setTables([])
+      setAllColumns(new Map())
+    }
+  }
+
+  // 切换选中的连接，如果已连接则加载数据库列表
+  const handleSelectConnection = async (id: string) => {
+    setActiveConnection(id)
+    
+    // 如果该连接已经连接，加载其数据库列表
+    if (connectedIds.has(id)) {
+      setSelectedDatabase(null)
+      setTables([])
+      setAllColumns(new Map())
+      setStatus({ text: '正在加载数据库列表...', type: 'info' })
+      
+      try {
+        const dbs = await window.electronAPI?.getDatabases(id)
+        setDatabases(dbs || [])
+        setStatus({ text: `${dbs?.length || 0} 个数据库`, type: 'success' })
+      } catch (err: any) {
+        setStatus({ text: err.message, type: 'error' })
+      }
+    } else {
+      // 未连接的连接，清空数据库列表
       setDatabases([])
       setSelectedDatabase(null)
       setTables([])
@@ -278,7 +310,7 @@ export default function App() {
           selectedDatabase={selectedDatabase}
           loadingTables={loadingTables}
           onNewConnection={() => { setEditingConnection(null); setDefaultDbType(undefined); setShowModal(true) }}
-          onSelectConnection={setActiveConnection}
+          onSelectConnection={handleSelectConnection}
           onConnect={handleConnect}
           onDisconnect={handleDisconnect}
           onEditConnection={(c) => { setEditingConnection(c); setShowModal(true) }}

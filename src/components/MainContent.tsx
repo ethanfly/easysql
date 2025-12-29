@@ -1,4 +1,4 @@
-import { X, Play, Plus, Table2, ChevronLeft, ChevronRight, Key, Info, FolderOpen, Save, AlignLeft, Download, FileSpreadsheet, FileCode, Database, Pin, PinOff } from 'lucide-react'
+import { X, Play, Plus, Table2, ChevronLeft, ChevronRight, Key, Info, FolderOpen, Save, AlignLeft, Download, FileSpreadsheet, FileCode, Database, Pin, PinOff, Trash2, RotateCcw } from 'lucide-react'
 import { QueryTab, DB_INFO, DatabaseType, TableInfo, ColumnInfo, TableTab } from '../types'
 import { useState, useRef, useEffect, useCallback } from 'react'
 import SqlEditor from './SqlEditor'
@@ -17,13 +17,22 @@ interface DataTableColumn {
 interface DataTableProps {
   columns: DataTableColumn[]
   data: any[]
-  showColumnInfo?: boolean // 是否显示列的类型和备注信息
+  showColumnInfo?: boolean
+  editable?: boolean
+  primaryKeyColumn?: string
+  onCellChange?: (rowIndex: number, colName: string, value: any) => void
+  onDeleteRow?: (rowIndex: number) => void
+  modifiedCells?: Set<string> // "rowIndex-colName" 格式
 }
 
-function DataTable({ columns, data, showColumnInfo = false }: DataTableProps) {
+function DataTable({ columns, data, showColumnInfo = false, editable = false, primaryKeyColumn, onCellChange, onDeleteRow, modifiedCells }: DataTableProps) {
   const [pinnedColumns, setPinnedColumns] = useState<Set<string>>(new Set())
   const tableContainerRef = useRef<HTMLDivElement>(null)
   const [scrollLeft, setScrollLeft] = useState(0)
+  const [editingCell, setEditingCell] = useState<{ row: number; col: string } | null>(null)
+  const [editValue, setEditValue] = useState<string>('')
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; row: number; col: string } | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
   
   // 切换列固定状态
   const togglePin = useCallback((colName: string) => {
@@ -114,8 +123,9 @@ function DataTable({ columns, data, showColumnInfo = false }: DataTableProps) {
                   key={col.name}
                   data-pinned={isPinned}
                   data-col={col.name}
-                  className={`px-4 py-2 text-left font-medium border-b border-r border-metro-border whitespace-nowrap select-none
-                    ${isPinned ? 'z-30' : ''}`}
+                  onClick={() => togglePin(col.name)}
+                  className={`px-4 py-2 text-left font-medium border-b border-r border-metro-border whitespace-nowrap select-none cursor-pointer
+                    ${isPinned ? 'z-30' : 'hover:bg-white/5'}`}
                   style={{ 
                     background: isPinned ? '#1a3a4a' : '#2d2d2d',
                     position: isPinned ? 'sticky' : 'relative',
@@ -123,17 +133,13 @@ function DataTable({ columns, data, showColumnInfo = false }: DataTableProps) {
                     minWidth: '120px',
                     boxShadow: isPinned && scrollLeft > 0 ? '2px 0 4px rgba(0,0,0,0.3)' : 'none',
                   }}
-                  title={col.comment ? `${col.name}\n类型: ${col.type}\n备注: ${col.comment}` : col.type ? `${col.name}\n类型: ${col.type}` : col.name}
+                  title={isPinned ? `点击取消固定 ${col.name}` : `点击固定 ${col.name}`}
                 >
                   <div className="flex items-center gap-1.5">
-                    {/* 固定/取消固定按钮 */}
-                    <button
-                      onClick={(e) => { e.stopPropagation(); togglePin(col.name) }}
-                      className={`p-0.5 rounded transition-colors ${isPinned ? 'text-accent-blue bg-accent-blue/20' : 'text-white/30 hover:text-white/60 hover:bg-white/10'}`}
-                      title={isPinned ? '取消固定' : '固定此列'}
-                    >
+                    {/* 固定状态图标 */}
+                    <span className={`transition-colors ${isPinned ? 'text-accent-blue' : 'text-white/30'}`}>
                       {isPinned ? <Pin size={12} /> : <PinOff size={12} />}
-                    </button>
+                    </span>
                     
                     {showColumnInfo && col.key === 'PRI' && <Key size={12} className="text-accent-orange" />}
                     <span className="text-accent-blue">{col.name}</span>
@@ -141,7 +147,7 @@ function DataTable({ columns, data, showColumnInfo = false }: DataTableProps) {
                       <span className="text-white/30 font-normal text-xs">({col.type})</span>
                     )}
                     {showColumnInfo && col.comment && (
-                      <span className="text-accent-green text-xs" title={col.comment}>
+                      <span className="text-accent-green text-xs">
                         <Info size={12} />
                       </span>
                     )}
@@ -157,27 +163,79 @@ function DataTable({ columns, data, showColumnInfo = false }: DataTableProps) {
           </tr>
         </thead>
         <tbody>
-          {data.map((row, i) => (
-            <tr key={i} className="hover:bg-metro-surface/50">
-              {sortedColumns.map((col, j) => {
+          {data.map((row, rowIndex) => (
+            <tr 
+              key={rowIndex} 
+              className="hover:bg-metro-surface/50 group"
+              onContextMenu={(e) => {
+                if (editable) {
+                  e.preventDefault()
+                  setContextMenu({ x: e.clientX, y: e.clientY, row: rowIndex, col: '' })
+                }
+              }}
+            >
+              {sortedColumns.map((col) => {
                 const isPinned = pinnedColumns.has(col.name)
                 const pinnedIndex = isPinned ? [...pinnedColumns].indexOf(col.name) : -1
                 const value = row[col.name]
+                const isEditing = editingCell?.row === rowIndex && editingCell?.col === col.name
+                const isModified = modifiedCells?.has(`${rowIndex}-${col.name}`)
                 
                 return (
                   <td 
                     key={col.name}
                     className={`px-4 py-1.5 border-b border-r border-metro-border/50 font-mono text-white/80 whitespace-nowrap
-                      ${isPinned ? 'z-10' : ''}`}
+                      ${isPinned ? 'z-10' : ''}
+                      ${editable ? 'cursor-text' : ''}
+                      ${isModified ? 'bg-accent-orange/20' : ''}`}
                     style={{ 
-                      background: isPinned ? '#1a3040' : 'transparent',
+                      background: isPinned ? (isModified ? '#3a3020' : '#1a3040') : (isModified ? 'rgba(249, 115, 22, 0.15)' : 'transparent'),
                       position: isPinned ? 'sticky' : 'relative',
                       left: isPinned ? `${pinnedIndex * 150}px` : 'auto',
                       minWidth: '120px',
                       boxShadow: isPinned && scrollLeft > 0 ? '2px 0 4px rgba(0,0,0,0.2)' : 'none',
                     }}
+                    onClick={() => {
+                      if (editable && !isEditing) {
+                        setEditingCell({ row: rowIndex, col: col.name })
+                        setEditValue(value === null ? '' : String(value))
+                        setTimeout(() => inputRef.current?.focus(), 0)
+                      }
+                    }}
+                    onContextMenu={(e) => {
+                      if (editable) {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        setContextMenu({ x: e.clientX, y: e.clientY, row: rowIndex, col: col.name })
+                      }
+                    }}
                   >
-                    {value === null ? (
+                    {isEditing ? (
+                      <input
+                        ref={inputRef}
+                        type="text"
+                        value={editValue}
+                        onChange={(e) => setEditValue(e.target.value)}
+                        onBlur={() => {
+                          if (editValue !== (value === null ? '' : String(value))) {
+                            onCellChange?.(rowIndex, col.name, editValue === '' ? null : editValue)
+                          }
+                          setEditingCell(null)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            if (editValue !== (value === null ? '' : String(value))) {
+                              onCellChange?.(rowIndex, col.name, editValue === '' ? null : editValue)
+                            }
+                            setEditingCell(null)
+                          } else if (e.key === 'Escape') {
+                            setEditingCell(null)
+                          }
+                        }}
+                        className="w-full bg-accent-blue/20 border border-accent-blue px-1 py-0.5 text-white outline-none"
+                        style={{ minWidth: '80px' }}
+                      />
+                    ) : value === null ? (
                       <span className="text-white/30 italic">NULL</span>
                     ) : typeof value === 'object' ? (
                       <span className="text-accent-purple">{JSON.stringify(value)}</span>
@@ -196,6 +254,51 @@ function DataTable({ columns, data, showColumnInfo = false }: DataTableProps) {
         <div className="h-32 flex items-center justify-center text-white/30">
           暂无数据
         </div>
+      )}
+      
+      {/* 右键菜单 */}
+      {contextMenu && editable && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setContextMenu(null)} />
+          <div
+            className="fixed z-50 bg-metro-surface border border-metro-border py-1 min-w-[160px] shadow-lg"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+          >
+            {contextMenu.col && (
+              <>
+                <button
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-2"
+                  onClick={() => {
+                    onCellChange?.(contextMenu.row, contextMenu.col, null)
+                    setContextMenu(null)
+                  }}
+                >
+                  设为 NULL
+                </button>
+                <button
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-2"
+                  onClick={() => {
+                    onCellChange?.(contextMenu.row, contextMenu.col, '')
+                    setContextMenu(null)
+                  }}
+                >
+                  设为空字符串
+                </button>
+                <div className="my-1 border-t border-metro-border" />
+              </>
+            )}
+            <button
+              className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-2 text-accent-red"
+              onClick={() => {
+                onDeleteRow?.(contextMenu.row)
+                setContextMenu(null)
+              }}
+            >
+              <Trash2 size={14} />
+              删除此行
+            </button>
+          </div>
+        </>
       )}
     </div>
   )
@@ -217,6 +320,10 @@ interface Props {
   onUpdateTabTitle: (id: string, title: string) => void
   onLoadTablePage: (id: string, page: number) => void
   onNewConnectionWithType?: (type: DatabaseType) => void
+  onUpdateTableCell?: (tabId: string, rowIndex: number, colName: string, value: any) => void
+  onDeleteTableRow?: (tabId: string, rowIndex: number) => void
+  onSaveTableChanges?: (tabId: string) => Promise<void>
+  onDiscardTableChanges?: (tabId: string) => void
 }
 
 export default function MainContent({
@@ -233,7 +340,34 @@ export default function MainContent({
   onUpdateTabTitle,
   onLoadTablePage,
   onNewConnectionWithType,
+  onUpdateTableCell,
+  onDeleteTableRow,
+  onSaveTableChanges,
+  onDiscardTableChanges,
 }: Props) {
+  // 快捷键处理
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+W 关闭当前标签页
+      if (e.ctrlKey && e.key === 'w') {
+        e.preventDefault()
+        if (activeTab !== 'welcome') {
+          onCloseTab(activeTab)
+        }
+      }
+      // Ctrl+S 保存（针对表数据编辑）
+      if (e.ctrlKey && e.key === 's') {
+        const tab = tabs.find(t => t.id === activeTab)
+        if (tab && 'tableName' in tab && (tab as any).pendingChanges?.size > 0) {
+          e.preventDefault()
+          onSaveTableChanges?.(activeTab)
+        }
+      }
+    }
+    
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [activeTab, tabs, onCloseTab, onSaveTableChanges])
   const currentTab = tabs.find(t => t.id === activeTab)
 
   const getTabTitle = (tab: Tab) => {
@@ -299,7 +433,14 @@ export default function MainContent({
           <WelcomeScreen onNewQuery={onNewQuery} onNewConnectionWithType={onNewConnectionWithType} />
         ) : currentTab ? (
           'tableName' in currentTab ? (
-            <TableViewer tab={currentTab} onLoadPage={(page) => onLoadTablePage(currentTab.id, page)} />
+            <TableViewer 
+              tab={currentTab as any} 
+              onLoadPage={(page) => onLoadTablePage(currentTab.id, page)}
+              onCellChange={(rowIndex, colName, value) => onUpdateTableCell?.(currentTab.id, rowIndex, colName, value)}
+              onDeleteRow={(rowIndex) => onDeleteTableRow?.(currentTab.id, rowIndex)}
+              onSave={() => onSaveTableChanges?.(currentTab.id)}
+              onDiscard={() => onDiscardTableChanges?.(currentTab.id)}
+            />
           ) : (
             <QueryEditor
               tab={currentTab}
@@ -367,11 +508,32 @@ function WelcomeScreen({ onNewQuery, onNewConnectionWithType }: {
   )
 }
 
-function TableViewer({ tab, onLoadPage }: { 
-  tab: TableTab
+function TableViewer({ tab, onLoadPage, onCellChange, onDeleteRow, onSave, onDiscard }: { 
+  tab: TableTab & { pendingChanges?: Map<string, any>; deletedRows?: Set<number> }
   onLoadPage: (page: number) => void
+  onCellChange?: (rowIndex: number, colName: string, value: any) => void
+  onDeleteRow?: (rowIndex: number) => void
+  onSave?: () => void
+  onDiscard?: () => void
 }) {
   const totalPages = Math.ceil(tab.total / tab.pageSize)
+  const hasChanges = (tab.pendingChanges?.size || 0) > 0 || (tab.deletedRows?.size || 0) > 0
+  
+  // 找到主键列
+  const primaryKeyCol = tab.columns.find(c => c.key === 'PRI')?.name || tab.columns[0]?.name
+  
+  // 计算修改过的单元格
+  const modifiedCells = new Set<string>()
+  tab.pendingChanges?.forEach((changes, rowKey) => {
+    const rowIndex = parseInt(rowKey)
+    Object.keys(changes).forEach(colName => {
+      modifiedCells.add(`${rowIndex}-${colName}`)
+    })
+  })
+  
+  // 过滤掉已删除的行
+  const visibleData = tab.data.filter((_, i) => !tab.deletedRows?.has(i))
+  const originalIndexMap = tab.data.map((_, i) => i).filter(i => !tab.deletedRows?.has(i))
   
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -383,9 +545,33 @@ function TableViewer({ tab, onLoadPage }: {
           <span className="text-white/40 text-sm">({tab.total} 行)</span>
         </div>
         
-        <span className="text-xs text-white/30 flex items-center gap-1">
-          <Pin size={12} /> 点击列头图钉可固定列
-        </span>
+        {hasChanges ? (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-accent-orange flex items-center gap-1">
+              {(tab.pendingChanges?.size || 0) + (tab.deletedRows?.size || 0)} 项修改待保存
+            </span>
+            <button
+              onClick={onSave}
+              className="h-7 px-3 bg-accent-green hover:bg-accent-green/90 flex items-center gap-1.5 text-xs transition-colors"
+              title="保存修改 (Ctrl+S)"
+            >
+              <Save size={12} />
+              保存
+            </button>
+            <button
+              onClick={onDiscard}
+              className="h-7 px-3 bg-metro-surface hover:bg-metro-surface/80 flex items-center gap-1.5 text-xs transition-colors"
+              title="放弃修改"
+            >
+              <RotateCcw size={12} />
+              放弃
+            </button>
+          </div>
+        ) : (
+          <span className="text-xs text-white/30">
+            点击单元格可编辑，右键可删除行或设为 NULL
+          </span>
+        )}
         
         {/* 分页控制 */}
         <div className="flex items-center gap-2 ml-auto">
@@ -409,13 +595,24 @@ function TableViewer({ tab, onLoadPage }: {
         </div>
       </div>
 
-      {/* 数据表格 - 使用 DataTable 组件支持列固定 */}
+      {/* 数据表格 - 使用 DataTable 组件支持列固定和编辑 */}
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
           <DataTable 
             columns={tab.columns} 
-            data={tab.data} 
+            data={visibleData} 
             showColumnInfo={true}
+            editable={true}
+            primaryKeyColumn={primaryKeyCol}
+            modifiedCells={modifiedCells}
+            onCellChange={(visibleRowIndex, colName, value) => {
+              const originalIndex = originalIndexMap[visibleRowIndex]
+              onCellChange?.(originalIndex, colName, value)
+            }}
+            onDeleteRow={(visibleRowIndex) => {
+              const originalIndex = originalIndexMap[visibleRowIndex]
+              onDeleteRow?.(originalIndex)
+            }}
           />
         </div>
       </div>

@@ -22,5 +22,8 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
   saveFile: (filePath, content) => electron.ipcRenderer.invoke("file:save", filePath, content),
   // 数据库备份与导出
   backupDatabase: (id, database) => electron.ipcRenderer.invoke("db:backup", id, database),
-  exportTable: (id, database, tableName, format) => electron.ipcRenderer.invoke("db:exportTable", id, database, tableName, format)
+  exportTable: (id, database, tableName, format) => electron.ipcRenderer.invoke("db:exportTable", id, database, tableName, format),
+  // 数据编辑
+  updateRow: (id, database, tableName, primaryKey, updates) => electron.ipcRenderer.invoke("db:updateRow", id, database, tableName, primaryKey, updates),
+  deleteRow: (id, database, tableName, primaryKey) => electron.ipcRenderer.invoke("db:deleteRow", id, database, tableName, primaryKey)
 });

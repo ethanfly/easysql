@@ -607,3 +607,64 @@ ipcMain.handle('db:exportTable', async (_, id: string, database: string, tableNa
     return { error: err.message }
   }
 })
+
+// 更新表数据
+ipcMain.handle('db:updateRow', async (_, id: string, database: string, tableName: string, primaryKey: { column: string; value: any }, updates: Record<string, any>) => {
+  const db = dbConnections.get(id)
+  if (!db) return { error: '未连接数据库' }
+
+  try {
+    if (db.type === 'mysql' || db.type === 'mariadb') {
+      await db.conn.query(`USE \`${database}\``)
+      
+      const setClauses = Object.entries(updates).map(([col, val]) => {
+        if (val === null) return `\`${col}\` = NULL`
+        return `\`${col}\` = ?`
+      })
+      const values = Object.values(updates).filter(v => v !== null)
+      values.push(primaryKey.value)
+      
+      await db.conn.query(
+        `UPDATE \`${tableName}\` SET ${setClauses.join(', ')} WHERE \`${primaryKey.column}\` = ?`,
+        values
+      )
+      return { success: true }
+    } else if (db.type === 'postgres') {
+      const setClauses = Object.entries(updates).map(([col, val], i) => {
+        if (val === null) return `"${col}" = NULL`
+        return `"${col}" = $${i + 1}`
+      })
+      const values = Object.values(updates).filter(v => v !== null)
+      values.push(primaryKey.value)
+      
+      await db.conn.query(
+        `UPDATE "${tableName}" SET ${setClauses.join(', ')} WHERE "${primaryKey.column}" = $${values.length}`,
+        values
+      )
+      return { success: true }
+    }
+    return { error: '不支持的数据库类型' }
+  } catch (err: any) {
+    return { error: err.message }
+  }
+})
+
+// 删除表数据行
+ipcMain.handle('db:deleteRow', async (_, id: string, database: string, tableName: string, primaryKey: { column: string; value: any }) => {
+  const db = dbConnections.get(id)
+  if (!db) return { error: '未连接数据库' }
+
+  try {
+    if (db.type === 'mysql' || db.type === 'mariadb') {
+      await db.conn.query(`USE \`${database}\``)
+      await db.conn.query(`DELETE FROM \`${tableName}\` WHERE \`${primaryKey.column}\` = ?`, [primaryKey.value])
+      return { success: true }
+    } else if (db.type === 'postgres') {
+      await db.conn.query(`DELETE FROM "${tableName}" WHERE "${primaryKey.column}" = $1`, [primaryKey.value])
+      return { success: true }
+    }
+    return { error: '不支持的数据库类型' }
+  } catch (err: any) {
+    return { error: err.message }
+  }
+})
