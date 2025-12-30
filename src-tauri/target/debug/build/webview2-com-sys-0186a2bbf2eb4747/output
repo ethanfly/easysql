@@ -1,0 +1,2 @@
+cargo:rustc-link-search=native=E:\Workspace\easysql\src-tauri\target\debug\build\webview2-com-sys-0186a2bbf2eb4747\out\x64
+cargo:rustc-link-lib=advapi32

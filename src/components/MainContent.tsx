@@ -1,308 +1,22 @@
-import { X, Play, Plus, Table2, ChevronLeft, ChevronRight, Key, Info, FolderOpen, Save, AlignLeft, Download, FileSpreadsheet, FileCode, Database, Pin, PinOff, Trash2, RotateCcw } from 'lucide-react'
+import { X, Play, Plus, Table2, ChevronLeft, ChevronRight, FolderOpen, Save, AlignLeft, Download, FileSpreadsheet, FileCode, Database, RotateCcw, Loader2 } from 'lucide-react'
 import { QueryTab, DB_INFO, DatabaseType, TableInfo, ColumnInfo, TableTab } from '../types'
-import { useState, useRef, useEffect, useCallback } from 'react'
-import SqlEditor from './SqlEditor'
+import { useState, useRef, useEffect, useCallback, memo, Suspense, lazy } from 'react'
 import { format } from 'sql-formatter'
-import * as XLSX from 'xlsx'
-import { saveAs } from 'file-saver'
+import api from '../lib/tauri-api'
+import VirtualDataTable from './VirtualDataTable'
 
-// 可固定列的数据表格组件
-interface DataTableColumn {
-  name: string
-  type?: string
-  key?: string
-  comment?: string
-}
+// 懒加载 Monaco Editor 以提升首次加载性能
+const SqlEditor = lazy(() => import('./SqlEditor'))
 
-interface DataTableProps {
-  columns: DataTableColumn[]
-  data: any[]
-  showColumnInfo?: boolean
-  editable?: boolean
-  primaryKeyColumn?: string
-  onCellChange?: (rowIndex: number, colName: string, value: any) => void
-  onDeleteRow?: (rowIndex: number) => void
-  modifiedCells?: Set<string> // "rowIndex-colName" 格式
-}
-
-function DataTable({ columns, data, showColumnInfo = false, editable = false, primaryKeyColumn, onCellChange, onDeleteRow, modifiedCells }: DataTableProps) {
-  const [pinnedColumns, setPinnedColumns] = useState<Set<string>>(new Set())
-  const tableContainerRef = useRef<HTMLDivElement>(null)
-  const [scrollLeft, setScrollLeft] = useState(0)
-  const [editingCell, setEditingCell] = useState<{ row: number; col: string } | null>(null)
-  const [editValue, setEditValue] = useState<string>('')
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; row: number; col: string } | null>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
-  
-  // 切换列固定状态
-  const togglePin = useCallback((colName: string) => {
-    setPinnedColumns(prev => {
-      const next = new Set(prev)
-      if (next.has(colName)) {
-        next.delete(colName)
-      } else {
-        next.add(colName)
-      }
-      return next
-    })
-  }, [])
-  
-  // 获取排序后的列（固定列在前）
-  const sortedColumns = [...columns].sort((a, b) => {
-    const aPinned = pinnedColumns.has(a.name) ? 0 : 1
-    const bPinned = pinnedColumns.has(b.name) ? 0 : 1
-    return aPinned - bPinned
-  })
-  
-  // 计算固定列的累积宽度
-  const pinnedColWidths = useRef<Map<string, number>>(new Map())
-  
-  useEffect(() => {
-    // 在每次渲染后更新固定列宽度
-    const container = tableContainerRef.current
-    if (!container) return
-    
-    const headerCells = container.querySelectorAll('th[data-pinned="true"]')
-    let accumulatedWidth = 0
-    
-    pinnedColWidths.current.clear()
-    headerCells.forEach((cell) => {
-      const colName = cell.getAttribute('data-col')
-      if (colName) {
-        pinnedColWidths.current.set(colName, accumulatedWidth)
-        accumulatedWidth += (cell as HTMLElement).offsetWidth
-      }
-    })
-  }, [pinnedColumns, columns])
-  
-  // 监听滚动
-  useEffect(() => {
-    const container = tableContainerRef.current
-    if (!container) return
-    
-    const handleScroll = () => {
-      setScrollLeft(container.scrollLeft)
-    }
-    
-    container.addEventListener('scroll', handleScroll)
-    return () => container.removeEventListener('scroll', handleScroll)
-  }, [])
-  
-  // 获取列的左边距（用于固定定位）
-  const getPinnedLeft = (colName: string, index: number): number => {
-    // 计算该列之前所有固定列的宽度总和
-    let left = 0
-    for (let i = 0; i < index; i++) {
-      const col = sortedColumns[i]
-      if (pinnedColumns.has(col.name)) {
-        // 假设每列最小宽度 120px，实际会根据内容调整
-        left += 150
-      }
-    }
-    return left
-  }
-  
-  return (
-    <div 
-      ref={tableContainerRef}
-      style={{ 
-        height: '100%',
-        overflow: 'auto',
-        position: 'relative'
-      }}
-    >
-      <table className="text-sm border-collapse" style={{ minWidth: 'max-content' }}>
-        <thead className="sticky top-0 z-20">
-          <tr>
-            {sortedColumns.map((col, i) => {
-              const isPinned = pinnedColumns.has(col.name)
-              const pinnedIndex = isPinned ? [...pinnedColumns].indexOf(col.name) : -1
-              
-              return (
-                <th 
-                  key={col.name}
-                  data-pinned={isPinned}
-                  data-col={col.name}
-                  onClick={() => togglePin(col.name)}
-                  className={`px-4 py-2 text-left font-medium border-b border-r border-metro-border whitespace-nowrap select-none cursor-pointer
-                    ${isPinned ? 'z-30' : 'hover:bg-white/5'}`}
-                  style={{ 
-                    background: isPinned ? '#1a3a4a' : '#2d2d2d',
-                    position: isPinned ? 'sticky' : 'relative',
-                    left: isPinned ? `${pinnedIndex * 150}px` : 'auto',
-                    minWidth: '120px',
-                    boxShadow: isPinned && scrollLeft > 0 ? '2px 0 4px rgba(0,0,0,0.3)' : 'none',
-                  }}
-                  title={isPinned ? `点击取消固定 ${col.name}` : `点击固定 ${col.name}`}
-                >
-                  <div className="flex items-center gap-1.5">
-                    {/* 固定状态图标 */}
-                    <span className={`transition-colors ${isPinned ? 'text-accent-blue' : 'text-white/30'}`}>
-                      {isPinned ? <Pin size={12} /> : <PinOff size={12} />}
-                    </span>
-                    
-                    {showColumnInfo && col.key === 'PRI' && <Key size={12} className="text-accent-orange" />}
-                    <span className="text-accent-blue">{col.name}</span>
-                    {showColumnInfo && col.type && (
-                      <span className="text-white/30 font-normal text-xs">({col.type})</span>
-                    )}
-                    {showColumnInfo && col.comment && (
-                      <span className="text-accent-green text-xs">
-                        <Info size={12} />
-                      </span>
-                    )}
-                  </div>
-                  {showColumnInfo && col.comment && (
-                    <div className="text-xs text-white/40 font-normal mt-0.5 max-w-[200px] truncate">
-                      {col.comment}
-                    </div>
-                  )}
-                </th>
-              )
-            })}
-          </tr>
-        </thead>
-        <tbody>
-          {data.map((row, rowIndex) => (
-            <tr 
-              key={rowIndex} 
-              className="hover:bg-metro-surface/50 group"
-              onContextMenu={(e) => {
-                if (editable) {
-                  e.preventDefault()
-                  setContextMenu({ x: e.clientX, y: e.clientY, row: rowIndex, col: '' })
-                }
-              }}
-            >
-              {sortedColumns.map((col) => {
-                const isPinned = pinnedColumns.has(col.name)
-                const pinnedIndex = isPinned ? [...pinnedColumns].indexOf(col.name) : -1
-                const value = row[col.name]
-                const isEditing = editingCell?.row === rowIndex && editingCell?.col === col.name
-                const isModified = modifiedCells?.has(`${rowIndex}-${col.name}`)
-                
-                return (
-                  <td 
-                    key={col.name}
-                    className={`px-4 py-1.5 border-b border-r border-metro-border/50 font-mono text-white/80 whitespace-nowrap
-                      ${isPinned ? 'z-10' : ''}
-                      ${editable ? 'cursor-text' : ''}
-                      ${isModified ? 'bg-accent-orange/20' : ''}`}
-                    style={{ 
-                      background: isPinned ? (isModified ? '#3a3020' : '#1a3040') : (isModified ? 'rgba(249, 115, 22, 0.15)' : 'transparent'),
-                      position: isPinned ? 'sticky' : 'relative',
-                      left: isPinned ? `${pinnedIndex * 150}px` : 'auto',
-                      minWidth: '120px',
-                      boxShadow: isPinned && scrollLeft > 0 ? '2px 0 4px rgba(0,0,0,0.2)' : 'none',
-                    }}
-                    onClick={() => {
-                      if (editable && !isEditing) {
-                        setEditingCell({ row: rowIndex, col: col.name })
-                        setEditValue(value === null ? '' : String(value))
-                        setTimeout(() => inputRef.current?.focus(), 0)
-                      }
-                    }}
-                    onContextMenu={(e) => {
-                      if (editable) {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        setContextMenu({ x: e.clientX, y: e.clientY, row: rowIndex, col: col.name })
-                      }
-                    }}
-                  >
-                    {isEditing ? (
-                      <input
-                        ref={inputRef}
-                        type="text"
-                        value={editValue}
-                        onChange={(e) => setEditValue(e.target.value)}
-                        onBlur={() => {
-                          if (editValue !== (value === null ? '' : String(value))) {
-                            onCellChange?.(rowIndex, col.name, editValue === '' ? null : editValue)
-                          }
-                          setEditingCell(null)
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            if (editValue !== (value === null ? '' : String(value))) {
-                              onCellChange?.(rowIndex, col.name, editValue === '' ? null : editValue)
-                            }
-                            setEditingCell(null)
-                          } else if (e.key === 'Escape') {
-                            setEditingCell(null)
-                          }
-                        }}
-                        className="w-full bg-accent-blue/20 border border-accent-blue px-1 py-0.5 text-white outline-none"
-                        style={{ minWidth: '80px' }}
-                      />
-                    ) : value === null ? (
-                      <span className="text-white/30 italic">NULL</span>
-                    ) : typeof value === 'object' ? (
-                      <span className="text-accent-purple">{JSON.stringify(value)}</span>
-                    ) : (
-                      String(value)
-                    )}
-                  </td>
-                )
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      
-      {data.length === 0 && (
-        <div className="h-32 flex items-center justify-center text-white/30">
-          暂无数据
-        </div>
-      )}
-      
-      {/* 右键菜单 */}
-      {contextMenu && editable && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setContextMenu(null)} />
-          <div
-            className="fixed z-50 bg-metro-surface border border-metro-border py-1 min-w-[160px] shadow-lg"
-            style={{ left: contextMenu.x, top: contextMenu.y }}
-          >
-            {contextMenu.col && (
-              <>
-                <button
-                  className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-2"
-                  onClick={() => {
-                    onCellChange?.(contextMenu.row, contextMenu.col, null)
-                    setContextMenu(null)
-                  }}
-                >
-                  设为 NULL
-                </button>
-                <button
-                  className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-2"
-                  onClick={() => {
-                    onCellChange?.(contextMenu.row, contextMenu.col, '')
-                    setContextMenu(null)
-                  }}
-                >
-                  设为空字符串
-                </button>
-                <div className="my-1 border-t border-metro-border" />
-              </>
-            )}
-            <button
-              className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-2 text-accent-red"
-              onClick={() => {
-                onDeleteRow?.(contextMenu.row)
-                setContextMenu(null)
-              }}
-            >
-              <Trash2 size={14} />
-              删除此行
-            </button>
-          </div>
-        </>
-      )}
+// 编辑器加载占位组件
+const EditorLoading = memo(() => (
+  <div className="h-full flex items-center justify-center bg-metro-dark">
+    <div className="flex flex-col items-center gap-3">
+      <Loader2 className="w-8 h-8 animate-spin text-accent-blue" />
+      <span className="text-sm text-text-tertiary">加载编辑器...</span>
     </div>
-  )
-}
+  </div>
+))
 
 type Tab = QueryTab | TableTab
 
@@ -322,11 +36,13 @@ interface Props {
   onNewConnectionWithType?: (type: DatabaseType) => void
   onUpdateTableCell?: (tabId: string, rowIndex: number, colName: string, value: any) => void
   onDeleteTableRow?: (tabId: string, rowIndex: number) => void
+  onDeleteTableRows?: (tabId: string, rowIndices: number[]) => void
   onSaveTableChanges?: (tabId: string) => Promise<void>
   onDiscardTableChanges?: (tabId: string) => void
 }
 
-export default function MainContent({
+// 主内容组件
+const MainContent = memo(function MainContent({
   tabs,
   activeTab,
   databases,
@@ -342,20 +58,19 @@ export default function MainContent({
   onNewConnectionWithType,
   onUpdateTableCell,
   onDeleteTableRow,
+  onDeleteTableRows,
   onSaveTableChanges,
   onDiscardTableChanges,
 }: Props) {
   // 快捷键处理
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ctrl+W 关闭当前标签页
       if (e.ctrlKey && e.key === 'w') {
         e.preventDefault()
         if (activeTab !== 'welcome') {
           onCloseTab(activeTab)
         }
       }
-      // Ctrl+S 保存（针对表数据编辑）
       if (e.ctrlKey && e.key === 's') {
         const tab = tabs.find(t => t.id === activeTab)
         if (tab && 'tableName' in tab && (tab as any).pendingChanges?.size > 0) {
@@ -368,12 +83,11 @@ export default function MainContent({
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [activeTab, tabs, onCloseTab, onSaveTableChanges])
+  
   const currentTab = tabs.find(t => t.id === activeTab)
 
   const getTabTitle = (tab: Tab) => {
-    if ('tableName' in tab) {
-      return tab.tableName
-    }
+    if ('tableName' in tab) return tab.tableName
     return tab.title
   }
 
@@ -387,47 +101,54 @@ export default function MainContent({
   return (
     <div className="flex-1 flex flex-col bg-metro-dark">
       {/* Metro 风格标签栏 */}
-      <div className="h-9 bg-metro-bg flex items-end px-1 border-b border-metro-border overflow-x-auto">
+      <div className="h-10 bg-metro-bg flex items-stretch px-1 border-b border-metro-border/50 overflow-x-auto">
         <button
           onClick={() => onTabChange('welcome')}
-          className={`h-8 px-4 text-sm flex items-center transition-colors shrink-0
+          className={`px-5 text-sm flex items-center transition-all duration-150 shrink-0 relative
             ${activeTab === 'welcome' 
-              ? 'bg-metro-dark text-white' 
-              : 'text-white/60 hover:text-white hover:bg-metro-hover'}`}
+              ? 'bg-metro-dark text-white font-medium' 
+              : 'text-text-secondary hover:text-white hover:bg-metro-hover'}`}
         >
           主页
+          {activeTab === 'welcome' && (
+            <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-accent-blue" />
+          )}
         </button>
 
         {tabs.map(tab => (
           <div
             key={tab.id}
-            className={`h-8 px-3 flex items-center gap-2 text-sm group transition-colors shrink-0
+            className={`px-4 flex items-center gap-2 text-sm group transition-all duration-150 shrink-0 relative
               ${activeTab === tab.id 
-                ? 'bg-metro-dark text-white' 
-                : 'text-white/60 hover:text-white hover:bg-metro-hover'}`}
+                ? 'bg-metro-dark text-white font-medium' 
+                : 'text-text-secondary hover:text-white hover:bg-metro-hover'}`}
           >
-            <button onClick={() => onTabChange(tab.id)} className="flex items-center gap-1.5">
+            <button onClick={() => onTabChange(tab.id)} className="flex items-center gap-2">
               {getTabIcon(tab)}
-              {getTabTitle(tab)}
+              <span className="max-w-[120px] truncate">{getTabTitle(tab)}</span>
             </button>
             <button
               onClick={() => onCloseTab(tab.id)}
-              className="opacity-0 group-hover:opacity-100 hover:text-accent-red"
+              className="opacity-0 group-hover:opacity-100 hover:text-accent-red p-0.5 rounded-sm hover:bg-white/10 transition-all"
             >
               <X size={14} />
             </button>
+            {activeTab === tab.id && (
+              <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-accent-blue" />
+            )}
           </div>
         ))}
 
         <button
           onClick={onNewQuery}
-          className="h-8 w-8 flex items-center justify-center text-white/40 hover:text-white hover:bg-metro-hover shrink-0"
+          className="w-10 flex items-center justify-center text-text-tertiary hover:text-white hover:bg-metro-hover shrink-0 transition-colors"
+          title="新建查询 (Ctrl+Q)"
         >
-          <Plus size={16} />
+          <Plus size={18} />
         </button>
       </div>
 
-      {/* 内容 */}
+      {/* 内容区域 */}
       <div className="flex-1 min-h-0">
         {activeTab === 'welcome' ? (
           <WelcomeScreen onNewQuery={onNewQuery} onNewConnectionWithType={onNewConnectionWithType} />
@@ -438,6 +159,7 @@ export default function MainContent({
               onLoadPage={(page) => onLoadTablePage(currentTab.id, page)}
               onCellChange={(rowIndex, colName, value) => onUpdateTableCell?.(currentTab.id, rowIndex, colName, value)}
               onDeleteRow={(rowIndex) => onDeleteTableRow?.(currentTab.id, rowIndex)}
+              onDeleteRows={(rowIndices) => onDeleteTableRows?.(currentTab.id, rowIndices)}
               onSave={() => onSaveTableChanges?.(currentTab.id)}
               onDiscard={() => onDiscardTableChanges?.(currentTab.id)}
             />
@@ -456,70 +178,114 @@ export default function MainContent({
       </div>
     </div>
   )
-}
+})
 
-function WelcomeScreen({ onNewQuery, onNewConnectionWithType }: { 
+// 欢迎屏幕组件
+const WelcomeScreen = memo(function WelcomeScreen({ 
+  onNewQuery, 
+  onNewConnectionWithType 
+}: { 
   onNewQuery: () => void
   onNewConnectionWithType?: (type: DatabaseType) => void
 }) {
   return (
-    <div className="h-full flex flex-col items-center justify-center">
-      <h1 className="text-4xl font-light mb-2 text-white">EasySQL</h1>
-      <p className="text-white/50 mb-8">数据库管理工具</p>
+    <div className="h-full flex flex-col items-center justify-center bg-gradient-to-b from-metro-dark via-metro-dark to-metro-bg relative overflow-hidden">
+      {/* 背景装饰 */}
+      <div className="absolute inset-0 pointer-events-none">
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-accent-blue/5 rounded-full blur-3xl" />
+        <div className="absolute bottom-1/4 right-1/4 w-64 h-64 bg-accent-purple/5 rounded-full blur-3xl" />
+      </div>
+      
+      {/* Logo 区域 */}
+      <div className="flex items-center gap-4 mb-3 relative z-10">
+        <div className="p-3 bg-gradient-to-br from-accent-blue/20 to-accent-blue/5 rounded-lg">
+          <Database size={48} className="text-accent-blue" />
+        </div>
+        <h1 className="text-5xl font-light tracking-tight text-white">EasySQL</h1>
+      </div>
+      <p className="text-text-tertiary mb-10 text-lg relative z-10">简洁高效的数据库管理工具</p>
 
       <button
         onClick={onNewQuery}
-        className="px-8 py-3 bg-accent-blue hover:bg-accent-blue/90 text-sm font-medium transition-colors"
+        className="px-10 py-3.5 bg-accent-blue hover:bg-accent-blue-hover text-base font-medium 
+                   transition-all duration-200 shadow-metro hover:shadow-metro-lg relative z-10
+                   hover:translate-y-[-2px]"
       >
         开始查询
       </button>
 
-      {/* Metro 磁贴风格数据库展示 - 点击创建对应类型连接 */}
-      <p className="mt-10 text-white/40 text-sm">点击下方图标快速创建连接</p>
-      <div className="mt-4 grid grid-cols-5 gap-1">
+      {/* 数据库磁贴 */}
+      <p className="mt-14 text-text-disabled text-sm tracking-wide relative z-10">快速创建数据库连接</p>
+      <div className="mt-5 grid grid-cols-5 gap-2 relative z-10">
         {(Object.entries(DB_INFO) as [DatabaseType, typeof DB_INFO[DatabaseType]][]).slice(0, 5).map(([key, info]) => (
           <button
             key={key}
-            onClick={() => onNewConnectionWithType?.(key)}
-            className="w-20 h-20 flex flex-col items-center justify-center transition-all hover:scale-105 hover:shadow-lg cursor-pointer"
-            style={{ backgroundColor: info.color }}
-            title={`创建 ${info.name} 连接`}
+            onClick={() => info.supported && onNewConnectionWithType?.(key)}
+            className={`metro-tile w-24 h-24 flex flex-col items-center justify-center shadow-metro relative
+              ${info.supported ? 'cursor-pointer' : 'cursor-not-allowed'}`}
+            style={{ 
+              backgroundColor: info.color,
+              opacity: info.supported ? 1 : 0.4,
+              filter: info.supported ? 'none' : 'grayscale(50%)'
+            }}
+            title={info.supported ? `创建 ${info.name} 连接` : `${info.name} - 即将支持`}
+            disabled={!info.supported}
           >
-            <span className="text-2xl mb-1">{info.icon}</span>
-            <span className="text-xs text-white/90">{info.name}</span>
+            <span className="text-3xl mb-2">{info.icon}</span>
+            <span className="text-xs font-medium text-white/90">{info.name}</span>
+            {!info.supported && (
+              <span className="absolute bottom-1 text-[10px] text-white/60">即将支持</span>
+            )}
           </button>
         ))}
       </div>
-      <div className="grid grid-cols-4 gap-1 mt-1">
+      <div className="grid grid-cols-4 gap-2 mt-2 relative z-10">
         {(Object.entries(DB_INFO) as [DatabaseType, typeof DB_INFO[DatabaseType]][]).slice(5, 9).map(([key, info]) => (
           <button
             key={key}
-            onClick={() => onNewConnectionWithType?.(key)}
-            className="w-20 h-20 flex flex-col items-center justify-center transition-all hover:scale-105 hover:shadow-lg cursor-pointer"
-            style={{ backgroundColor: info.color }}
-            title={`创建 ${info.name} 连接`}
+            onClick={() => info.supported && onNewConnectionWithType?.(key)}
+            className={`metro-tile w-24 h-24 flex flex-col items-center justify-center shadow-metro relative
+              ${info.supported ? 'cursor-pointer' : 'cursor-not-allowed'}`}
+            style={{ 
+              backgroundColor: info.color,
+              opacity: info.supported ? 1 : 0.4,
+              filter: info.supported ? 'none' : 'grayscale(50%)'
+            }}
+            title={info.supported ? `创建 ${info.name} 连接` : `${info.name} - 即将支持`}
+            disabled={!info.supported}
           >
-            <span className="text-2xl mb-1">{info.icon}</span>
-            <span className="text-xs text-white/90">{info.name}</span>
+            <span className="text-3xl mb-2">{info.icon}</span>
+            <span className="text-xs font-medium text-white/90">{info.name}</span>
+            {!info.supported && (
+              <span className="absolute bottom-1 text-[10px] text-white/60">即将支持</span>
+            )}
           </button>
         ))}
       </div>
     </div>
   )
-}
+})
 
-function TableViewer({ tab, onLoadPage, onCellChange, onDeleteRow, onSave, onDiscard }: { 
+// 表格查看器组件
+const TableViewer = memo(function TableViewer({ 
+  tab, 
+  onLoadPage, 
+  onCellChange, 
+  onDeleteRow, 
+  onDeleteRows, 
+  onSave, 
+  onDiscard 
+}: { 
   tab: TableTab & { pendingChanges?: Map<string, any>; deletedRows?: Set<number> }
   onLoadPage: (page: number) => void
   onCellChange?: (rowIndex: number, colName: string, value: any) => void
   onDeleteRow?: (rowIndex: number) => void
+  onDeleteRows?: (rowIndices: number[]) => void
   onSave?: () => void
   onDiscard?: () => void
 }) {
   const totalPages = Math.ceil(tab.total / tab.pageSize)
   const hasChanges = (tab.pendingChanges?.size || 0) > 0 || (tab.deletedRows?.size || 0) > 0
-  
-  // 找到主键列
   const primaryKeyCol = tab.columns.find(c => c.key === 'PRI')?.name || tab.columns[0]?.name
   
   // 计算修改过的单元格
@@ -538,67 +304,66 @@ function TableViewer({ tab, onLoadPage, onCellChange, onDeleteRow, onSave, onDis
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       {/* 表信息栏 */}
-      <div className="h-10 bg-metro-bg flex items-center px-3 gap-4 border-b border-metro-border" style={{ flexShrink: 0 }}>
-        <div className="flex items-center gap-2">
-          <Table2 size={16} className="text-accent-orange" />
-          <span className="font-medium">{tab.tableName}</span>
-          <span className="text-white/40 text-sm">({tab.total} 行)</span>
+      <div className="h-12 bg-metro-bg flex items-center px-4 gap-4 border-b border-metro-border/50" style={{ flexShrink: 0 }}>
+        <div className="flex items-center gap-3">
+          <Table2 size={18} className="text-accent-orange" />
+          <span className="font-semibold text-white">{tab.tableName}</span>
+          <span className="text-text-tertiary text-sm">({tab.total.toLocaleString()} 行)</span>
         </div>
         
         {hasChanges ? (
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-accent-orange flex items-center gap-1">
-              {(tab.pendingChanges?.size || 0) + (tab.deletedRows?.size || 0)} 项修改待保存
+          <div className="flex items-center gap-3 ml-4">
+            <span className="text-xs text-accent-orange font-medium px-2 py-1 bg-accent-orange/10 rounded">
+              {(tab.pendingChanges?.size || 0) + (tab.deletedRows?.size || 0)} 项修改
             </span>
             <button
               onClick={onSave}
-              className="h-7 px-3 bg-accent-green hover:bg-accent-green/90 flex items-center gap-1.5 text-xs transition-colors"
+              className="h-8 px-4 bg-accent-green hover:bg-accent-green-hover flex items-center gap-2 text-sm font-medium transition-all shadow-metro"
               title="保存修改 (Ctrl+S)"
             >
-              <Save size={12} />
+              <Save size={14} />
               保存
             </button>
             <button
               onClick={onDiscard}
-              className="h-7 px-3 bg-metro-surface hover:bg-metro-surface/80 flex items-center gap-1.5 text-xs transition-colors"
-              title="放弃修改"
+              className="h-8 px-4 bg-metro-surface hover:bg-metro-hover flex items-center gap-2 text-sm transition-all border border-metro-border"
             >
-              <RotateCcw size={12} />
+              <RotateCcw size={14} />
               放弃
             </button>
           </div>
         ) : (
-          <span className="text-xs text-white/30">
-            点击单元格可编辑，右键可删除行或设为 NULL
+          <span className="text-xs text-text-disabled ml-4">
+            双击单元格编辑 · Ctrl+F 搜索 · 右键更多操作
           </span>
         )}
         
-        {/* 分页控制 */}
+        {/* 分页 */}
         <div className="flex items-center gap-2 ml-auto">
           <button
             onClick={() => onLoadPage(tab.page - 1)}
             disabled={tab.page <= 1}
-            className="p-1 hover:bg-metro-hover disabled:opacity-30 disabled:cursor-not-allowed"
+            className="p-1 hover:bg-metro-hover disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <ChevronLeft size={16} />
           </button>
           <span className="text-sm">
-            第 <span className="text-accent-blue">{tab.page}</span> / {totalPages} 页
+            第 <span className="text-accent-blue font-medium">{tab.page}</span> / {totalPages} 页
           </span>
           <button
             onClick={() => onLoadPage(tab.page + 1)}
             disabled={tab.page >= totalPages}
-            className="p-1 hover:bg-metro-hover disabled:opacity-30 disabled:cursor-not-allowed"
+            className="p-1 hover:bg-metro-hover disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <ChevronRight size={16} />
           </button>
         </div>
       </div>
 
-      {/* 数据表格 - 使用 DataTable 组件支持列固定和编辑 */}
+      {/* 数据表格 - 使用虚拟滚动 */}
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
-          <DataTable 
+          <VirtualDataTable 
             columns={tab.columns} 
             data={visibleData} 
             showColumnInfo={true}
@@ -613,14 +378,27 @@ function TableViewer({ tab, onLoadPage, onCellChange, onDeleteRow, onSave, onDis
               const originalIndex = originalIndexMap[visibleRowIndex]
               onDeleteRow?.(originalIndex)
             }}
+            onDeleteRows={(visibleRowIndices) => {
+              const originalIndices = visibleRowIndices.map(i => originalIndexMap[i])
+              onDeleteRows?.(originalIndices)
+            }}
           />
         </div>
       </div>
     </div>
   )
-}
+})
 
-function QueryEditor({ tab, databases, tables, columns, onRun, onUpdateSql, onUpdateTitle }: { 
+// 查询编辑器组件
+const QueryEditor = memo(function QueryEditor({ 
+  tab, 
+  databases, 
+  tables, 
+  columns, 
+  onRun, 
+  onUpdateSql, 
+  onUpdateTitle 
+}: { 
   tab: QueryTab
   databases: string[]
   tables: TableInfo[]
@@ -631,34 +409,32 @@ function QueryEditor({ tab, databases, tables, columns, onRun, onUpdateSql, onUp
 }) {
   const [sql, setSql] = useState(tab.sql)
   const [filePath, setFilePath] = useState<string | null>(null)
+  const [showExportMenu, setShowExportMenu] = useState(false)
 
-  const handleRun = () => {
+  const handleRun = useCallback(() => {
     onRun(sql)
     onUpdateSql(sql)
-  }
+  }, [sql, onRun, onUpdateSql])
 
-  // 打开 SQL 文件
-  const handleOpenFile = async () => {
-    const result = await window.electronAPI?.openFile()
+  const handleOpenFile = useCallback(async () => {
+    const result = await api.openFile()
     if (result && !result.error) {
       setSql(result.content)
       setFilePath(result.path)
       onUpdateSql(result.content)
       onUpdateTitle?.(result.name)
     }
-  }
+  }, [onUpdateSql, onUpdateTitle])
 
-  // 保存 SQL 文件
-  const handleSaveFile = async () => {
-    const result = await window.electronAPI?.saveFile(filePath, sql)
+  const handleSaveFile = useCallback(async () => {
+    const result = await api.saveFile(filePath, sql)
     if (result && !result.error) {
       setFilePath(result.path)
       onUpdateTitle?.(result.name)
     }
-  }
+  }, [filePath, sql, onUpdateTitle])
 
-  // 格式化 SQL
-  const handleFormat = () => {
+  const handleFormat = useCallback(() => {
     try {
       const formatted = format(sql, {
         language: 'mysql',
@@ -671,56 +447,90 @@ function QueryEditor({ tab, databases, tables, columns, onRun, onUpdateSql, onUp
     } catch (err) {
       console.error('SQL 格式化失败:', err)
     }
-  }
+  }, [sql, onUpdateSql])
 
-  // 从所有表的列信息中查找匹配的列（用于显示注释）
-  const findColumnInfo = (colName: string): ColumnInfo | undefined => {
+  const findColumnInfo = useCallback((colName: string): ColumnInfo | undefined => {
     for (const [, cols] of columns) {
       const found = cols.find(c => c.name === colName || c.name.toLowerCase() === colName.toLowerCase())
       if (found) return found
     }
     return undefined
-  }
+  }, [columns])
 
-  // 导出到 Excel
-  const handleExportExcel = () => {
+  const handleExportCsv = useCallback(async () => {
     if (!tab.results || tab.results.rows.length === 0) return
     
-    const ws = XLSX.utils.json_to_sheet(tab.results.rows)
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'Query Results')
-    const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
-    const blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-    saveAs(blob, `query_results_${Date.now()}.xlsx`)
-  }
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const { writeTextFile } = await import('@tauri-apps/plugin-fs')
+    
+    const path = await save({
+      filters: [{ name: 'CSV', extensions: ['csv'] }],
+      defaultPath: `query_results_${Date.now()}.csv`
+    })
+    if (!path) return
+    
+    const columnNames = tab.results.columns
+    const header = columnNames.join(',')
+    const rows = tab.results.rows.map(row => 
+      row.map((v: any) => {
+        if (v === null) return ''
+        if (typeof v === 'string') return `"${v.replace(/"/g, '""')}"`
+        return String(v)
+      }).join(',')
+    ).join('\n')
+    
+    await writeTextFile(path, `${header}\n${rows}`)
+  }, [tab.results])
 
-  // 导出到 SQL (INSERT 语句)
-  const handleExportSql = () => {
+  const handleExportSql = useCallback(async () => {
     if (!tab.results || tab.results.rows.length === 0) return
     
-    const tableName = 'table_name' // 默认表名
-    const columns = tab.results.columns
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const { writeTextFile } = await import('@tauri-apps/plugin-fs')
+    
+    const path = await save({
+      filters: [{ name: 'SQL', extensions: ['sql'] }],
+      defaultPath: `query_results_${Date.now()}.sql`
+    })
+    if (!path) return
+    
+    const tableName = 'table_name'
+    const columnNames = tab.results.columns
     const rows = tab.results.rows
     
     let sqlContent = `-- 导出时间: ${new Date().toLocaleString()}\n`
     sqlContent += `-- 共 ${rows.length} 条记录\n\n`
     
     rows.forEach(row => {
-      const values = columns.map(col => {
-        const val = row[col]
+      const values = row.map((val: any) => {
         if (val === null) return 'NULL'
         if (typeof val === 'number') return val
         return `'${String(val).replace(/'/g, "''")}'`
       }).join(', ')
-      sqlContent += `INSERT INTO \`${tableName}\` (\`${columns.join('`, `')}\`) VALUES (${values});\n`
+      sqlContent += `INSERT INTO \`${tableName}\` (\`${columnNames.join('`, `')}\`) VALUES (${values});\n`
     })
     
-    const blob = new Blob([sqlContent], { type: 'text/plain;charset=utf-8' })
-    saveAs(blob, `query_results_${Date.now()}.sql`)
-  }
+    await writeTextFile(path, sqlContent)
+  }, [tab.results])
 
-  // 导出下拉菜单状态
-  const [showExportMenu, setShowExportMenu] = useState(false)
+  // 结果数据转换为表格格式
+  const resultData = tab.results?.rows.map(row => {
+    const obj: Record<string, any> = {}
+    tab.results?.columns.forEach((col, i) => {
+      obj[col] = row[i]
+    })
+    return obj
+  }) || []
+
+  const resultColumns = tab.results?.columns.map(col => {
+    const colInfo = findColumnInfo(col)
+    return {
+      name: col,
+      type: colInfo?.type,
+      key: colInfo?.key,
+      comment: colInfo?.comment,
+    }
+  }) || []
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -771,7 +581,7 @@ function QueryEditor({ tab, databases, tables, columns, onRun, onUpdateSql, onUp
           <div className="relative">
             <button
               onClick={() => setShowExportMenu(!showExportMenu)}
-              className="h-7 px-3 bg-metro-surface hover:bg-metro-surface/80 flex items-center gap-1.5 text-sm transition-colors"
+              className="h-7 px-3 bg-metro-surface hover:bg-metro-surface/80 flex items-center gap-1.5 text-sm transition-colors disabled:opacity-40"
               title="导出结果"
               disabled={!tab.results || tab.results.rows.length === 0}
             >
@@ -779,78 +589,73 @@ function QueryEditor({ tab, databases, tables, columns, onRun, onUpdateSql, onUp
               导出
             </button>
             {showExportMenu && (
-              <div className="absolute top-full left-0 mt-1 bg-metro-surface border border-metro-border rounded shadow-lg z-50 min-w-[140px]">
-                <button
-                  onClick={() => { handleExportExcel(); setShowExportMenu(false) }}
-                  className="w-full px-3 py-2 text-left text-sm hover:bg-accent-blue/20 flex items-center gap-2"
-                >
-                  <FileSpreadsheet size={14} className="text-accent-green" />
-                  导出 Excel
-                </button>
-                <button
-                  onClick={() => { handleExportSql(); setShowExportMenu(false) }}
-                  className="w-full px-3 py-2 text-left text-sm hover:bg-accent-blue/20 flex items-center gap-2"
-                >
-                  <FileCode size={14} className="text-accent-orange" />
-                  导出 SQL
-                </button>
-              </div>
+              <>
+                <div className="fixed inset-0" onClick={() => setShowExportMenu(false)} />
+                <div className="absolute top-full left-0 mt-1 bg-metro-surface border border-metro-border rounded shadow-lg z-50 min-w-[140px] animate-fade-in">
+                  <button
+                    onClick={() => { handleExportCsv(); setShowExportMenu(false) }}
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-accent-blue/20 flex items-center gap-2"
+                  >
+                    <FileSpreadsheet size={14} className="text-accent-green" />
+                    导出 CSV
+                  </button>
+                  <button
+                    onClick={() => { handleExportSql(); setShowExportMenu(false) }}
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-accent-blue/20 flex items-center gap-2"
+                  >
+                    <FileCode size={14} className="text-accent-orange" />
+                    导出 SQL
+                  </button>
+                </div>
+              </>
             )}
           </div>
           
           <span className="text-xs text-white/40 ml-auto">
             {filePath && <span className="mr-3 text-accent-blue">{filePath.split(/[/\\]/).pop()}</span>}
-            Ctrl+Enter 执行 | Ctrl+S 保存 | Ctrl+Shift+F 格式化
+            Ctrl+Enter 执行 | Ctrl+S 保存
           </span>
         </div>
         <div style={{ flex: 1, minHeight: 0 }}>
-          <SqlEditor
-            value={sql}
-            onChange={setSql}
-            onRun={handleRun}
-            onSave={handleSaveFile}
-            onOpen={handleOpenFile}
-            onFormat={handleFormat}
-            databases={databases}
-            tables={tables}
-            columns={columns}
-          />
+          <Suspense fallback={<EditorLoading />}>
+            <SqlEditor
+              value={sql}
+              onChange={setSql}
+              onRun={handleRun}
+              onSave={handleSaveFile}
+              onOpen={handleOpenFile}
+              onFormat={handleFormat}
+              databases={databases}
+              tables={tables}
+              columns={columns}
+            />
+          </Suspense>
         </div>
       </div>
 
-      {/* 结果区 - 使用 DataTable 组件支持列固定 */}
+      {/* 结果区 */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <div className="h-9 bg-metro-bg flex items-center px-3 border-b border-metro-border" style={{ flexShrink: 0 }}>
           <span className="text-sm text-white/60">
             结果
-            {tab.results && <span className="ml-2 text-white/40">({tab.results.rows.length} 行)</span>}
+            {tab.results && <span className="ml-2 text-white/40">({tab.results.rows.length.toLocaleString()} 行)</span>}
           </span>
-          {tab.results && tab.results.rows.length > 0 && (
-            <span className="text-xs text-white/30 ml-4 flex items-center gap-1">
-              <Pin size={12} /> 点击列头图钉可固定列
-            </span>
-          )}
         </div>
         
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
           <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
             {tab.results ? (
-              <DataTable 
-                columns={tab.results.columns.map(col => {
-                  const colInfo = findColumnInfo(col)
-                  return {
-                    name: col,
-                    type: colInfo?.type,
-                    key: colInfo?.key,
-                    comment: colInfo?.comment,
-                  }
-                })}
-                data={tab.results.rows}
+              <VirtualDataTable 
+                columns={resultColumns}
+                data={resultData}
                 showColumnInfo={true}
               />
             ) : (
               <div className="h-full flex items-center justify-center text-white/30">
-                执行查询以查看结果
+                <div className="flex flex-col items-center gap-2">
+                  <Database size={32} className="text-white/20" />
+                  <span>执行查询以查看结果</span>
+                </div>
               </div>
             )}
           </div>
@@ -858,4 +663,6 @@ function QueryEditor({ tab, databases, tables, columns, onRun, onUpdateSql, onUp
       </div>
     </div>
   )
-}
+})
+
+export default MainContent

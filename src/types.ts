@@ -31,6 +31,7 @@ export interface TableInfo {
   name: string
   rows: number
   columns?: ColumnInfo[]
+  isView?: boolean
 }
 
 export interface ColumnInfo {
@@ -51,17 +52,21 @@ export interface TableTab {
   total: number
   page: number
   pageSize: number
+  // 编辑相关状态
+  pendingChanges?: Map<string, Record<string, any>> // rowIndex -> { colName: newValue }
+  deletedRows?: Set<number> // 待删除的行索引
+  originalData?: any[] // 原始数据用于回滚
 }
 
-export const DB_INFO: Record<DatabaseType, { name: string; icon: string; color: string; port: number }> = {
-  mysql: { name: 'MySQL', icon: '🐬', color: '#00758f', port: 3306 },
-  postgres: { name: 'PostgreSQL', icon: '🐘', color: '#336791', port: 5432 },
-  sqlite: { name: 'SQLite', icon: '💾', color: '#003b57', port: 0 },
-  mongodb: { name: 'MongoDB', icon: '🍃', color: '#47a248', port: 27017 },
-  redis: { name: 'Redis', icon: '⚡', color: '#dc382d', port: 6379 },
-  sqlserver: { name: 'SQL Server', icon: '📊', color: '#cc2927', port: 1433 },
-  oracle: { name: 'Oracle', icon: '🔶', color: '#f80000', port: 1521 },
-  mariadb: { name: 'MariaDB', icon: '🦭', color: '#c0765a', port: 3306 },
-  snowflake: { name: 'Snowflake', icon: '❄️', color: '#29b5e8', port: 443 },
+export const DB_INFO: Record<DatabaseType, { name: string; icon: string; color: string; port: number; supported: boolean }> = {
+  mysql: { name: 'MySQL', icon: '🐬', color: '#00758f', port: 3306, supported: true },
+  postgres: { name: 'PostgreSQL', icon: '🐘', color: '#336791', port: 5432, supported: true },
+  sqlite: { name: 'SQLite', icon: '💾', color: '#003b57', port: 0, supported: true },
+  mongodb: { name: 'MongoDB', icon: '🍃', color: '#47a248', port: 27017, supported: true },
+  redis: { name: 'Redis', icon: '⚡', color: '#dc382d', port: 6379, supported: true },
+  sqlserver: { name: 'SQL Server', icon: '📊', color: '#cc2927', port: 1433, supported: true },
+  oracle: { name: 'Oracle', icon: '🔶', color: '#f80000', port: 1521, supported: false },
+  mariadb: { name: 'MariaDB', icon: '🦭', color: '#c0765a', port: 3306, supported: true },
+  snowflake: { name: 'Snowflake', icon: '❄️', color: '#29b5e8', port: 443, supported: false },
 }
 
