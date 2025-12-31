@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { X } from 'lucide-react'
+import { X, Check } from 'lucide-react'
 
 interface Props {
   isOpen: boolean
@@ -9,11 +9,10 @@ interface Props {
   defaultValue?: string
   confirmText?: string
   onClose: () => void
-  onSubmit: (value: string) => void
+  onConfirm: (value: string) => void
   icon?: React.ReactNode
-  // 用于复制表的额外选项
   showDataOption?: boolean
-  onSubmitWithData?: (value: string, withData: boolean) => void
+  onConfirmWithData?: (value: string, withData: boolean) => void
 }
 
 export default function InputDialog({
@@ -24,10 +23,10 @@ export default function InputDialog({
   defaultValue = '',
   confirmText = '确定',
   onClose,
-  onSubmit,
+  onConfirm,
   icon,
   showDataOption,
-  onSubmitWithData,
+  onConfirmWithData,
 }: Props) {
   const [value, setValue] = useState(defaultValue)
   const [withData, setWithData] = useState(false)
@@ -41,61 +40,70 @@ export default function InputDialog({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (value.trim()) {
-      if (showDataOption && onSubmitWithData) {
-        onSubmitWithData(value.trim(), withData)
+      if (showDataOption && onConfirmWithData) {
+        onConfirmWithData(value.trim(), withData)
       } else {
-        onSubmit(value.trim())
+        onConfirm(value.trim())
       }
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-metro-card border border-metro-border w-[380px] shadow-metro-lg animate-fade-in">
+    <div className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in">
+      <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={onClose} />
+      
+      <div className="relative bg-white w-[380px] rounded-2xl shadow-modal animate-scale-in overflow-hidden">
         {/* 标题栏 */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-metro-border bg-metro-surface">
-          <div className="flex items-center gap-2">
-            {icon}
-            <span className="font-medium">{title}</span>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border-default">
+          <div className="flex items-center gap-3">
+            {icon && (
+              <div className="w-8 h-8 rounded-lg bg-light-elevated flex items-center justify-center">
+                {icon}
+              </div>
+            )}
+            <span className="font-semibold text-text-primary">{title}</span>
           </div>
           <button
             onClick={onClose}
-            className="p-1 hover:bg-metro-hover rounded-sm transition-colors"
+            className="p-1.5 hover:bg-light-hover rounded-lg transition-colors"
           >
-            <X size={16} />
+            <X size={16} className="text-text-tertiary" />
           </button>
         </div>
 
         {/* 表单 */}
-        <form onSubmit={handleSubmit} className="p-4 space-y-4">
+        <form onSubmit={handleSubmit} className="p-5 space-y-4">
           <div>
-            <label className="block text-sm text-text-secondary mb-1.5">
-              {label} <span className="text-accent-red">*</span>
+            <label className="block text-sm text-text-secondary mb-2 font-medium">
+              {label} <span className="text-danger-500">*</span>
             </label>
             <input
               type="text"
               value={value}
               onChange={(e) => setValue(e.target.value)}
               placeholder={placeholder}
-              className="w-full h-9 px-3 bg-metro-surface border border-metro-border text-sm
-                         focus:border-accent-blue focus:outline-none transition-colors"
+              className="w-full h-10 px-3 bg-light-surface border border-border-default rounded-lg
+                         focus:border-primary-500 focus:shadow-focus text-sm transition-all"
               autoFocus
             />
           </div>
 
           {showDataOption && (
-            <div className="flex items-center gap-2">
+            <label className="flex items-center gap-3 cursor-pointer group">
+              <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all
+                ${withData 
+                  ? 'bg-primary-500 border-primary-500' 
+                  : 'border-border-strong group-hover:border-primary-300'}`}>
+                {withData && <Check size={12} className="text-white" />}
+              </div>
               <input
                 type="checkbox"
-                id="withData"
                 checked={withData}
                 onChange={(e) => setWithData(e.target.checked)}
-                className="w-4 h-4 accent-accent-blue"
+                className="sr-only"
               />
-              <label htmlFor="withData" className="text-sm text-text-secondary cursor-pointer">
-                同时复制表数据
-              </label>
-            </div>
+              <span className="text-sm text-text-secondary">同时复制表数据</span>
+            </label>
           )}
 
           {/* 按钮 */}
@@ -103,15 +111,17 @@ export default function InputDialog({
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-sm bg-metro-surface hover:bg-metro-hover transition-colors"
+              className="px-4 py-2 text-sm bg-light-elevated hover:bg-light-muted border border-border-default
+                         rounded-lg transition-colors text-text-secondary"
             >
               取消
             </button>
             <button
               type="submit"
               disabled={!value.trim()}
-              className="px-4 py-2 text-sm bg-accent-blue hover:bg-accent-blue-hover disabled:opacity-50 
-                         disabled:cursor-not-allowed transition-colors"
+              className="px-4 py-2 text-sm bg-primary-500 hover:bg-primary-600 text-white
+                         disabled:opacity-50 disabled:cursor-not-allowed 
+                         rounded-lg transition-all font-medium shadow-btn hover:shadow-btn-hover"
             >
               {confirmText}
             </button>
@@ -121,4 +131,3 @@ export default function InputDialog({
     </div>
   )
 }
-

@@ -1,18 +1,16 @@
-import { X, Play, Plus, Minus, Table2, ChevronLeft, ChevronRight, FolderOpen, Save, AlignLeft, Download, FileSpreadsheet, FileCode, Database, RotateCcw, Loader2, Check, RefreshCw } from 'lucide-react'
+import { X, Play, Plus, Minus, Table2, ChevronLeft, ChevronRight, FolderOpen, Save, AlignLeft, Download, FileSpreadsheet, FileCode, Database, Loader2, Check, RefreshCw, Zap } from 'lucide-react'
 import { QueryTab, DB_INFO, DatabaseType, TableInfo, ColumnInfo, TableTab } from '../types'
-import { useState, useRef, useEffect, useCallback, memo, Suspense, lazy } from 'react'
+import { useState, useEffect, useCallback, memo, Suspense, lazy } from 'react'
 import { format } from 'sql-formatter'
 import api from '../lib/electron-api'
 import VirtualDataTable from './VirtualDataTable'
 
-// 懒加载 Monaco Editor 以提升首次加载性能
 const SqlEditor = lazy(() => import('./SqlEditor'))
 
-// 编辑器加载占位组件
 const EditorLoading = memo(() => (
-  <div className="h-full flex items-center justify-center bg-metro-dark">
+  <div className="h-full flex items-center justify-center bg-light-surface">
     <div className="flex flex-col items-center gap-3">
-      <Loader2 className="w-8 h-8 animate-spin text-accent-blue" />
+      <Loader2 className="w-6 h-6 animate-spin text-primary-500" />
       <span className="text-sm text-text-tertiary">加载编辑器...</span>
     </div>
   </div>
@@ -41,13 +39,12 @@ interface Props {
   onSaveTableChanges?: (tabId: string) => Promise<void>
   onDiscardTableChanges?: (tabId: string) => void
   onRefreshTable?: (tabId: string) => void
-  onAddTableRow?: (tabId: string) => void  // 新增行
-  onUpdateNewRow?: (tabId: string, rowIndex: number, colName: string, value: any) => void  // 更新新增行
-  onDeleteNewRow?: (tabId: string, rowIndex: number) => void  // 删除新增行
-  loadingTables?: Set<string>  // 正在加载的表标签ID
+  onAddTableRow?: (tabId: string) => void
+  onUpdateNewRow?: (tabId: string, rowIndex: number, colName: string, value: any) => void
+  onDeleteNewRow?: (tabId: string, rowIndex: number) => void
+  loadingTables?: Set<string>
 }
 
-// 主内容组件
 const MainContent = memo(function MainContent({
   tabs,
   activeTab,
@@ -74,14 +71,11 @@ const MainContent = memo(function MainContent({
   onDeleteNewRow,
   loadingTables,
 }: Props) {
-  // 快捷键处理
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.key === 'w') {
         e.preventDefault()
-        if (activeTab !== 'welcome') {
-          onCloseTab(activeTab)
-        }
+        if (activeTab !== 'welcome') onCloseTab(activeTab)
       }
       if (e.ctrlKey && e.key === 's') {
         const tab = tabs.find(t => t.id === activeTab)
@@ -91,7 +85,6 @@ const MainContent = memo(function MainContent({
         }
       }
     }
-    
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [activeTab, tabs, onCloseTab, onSaveTableChanges])
@@ -105,62 +98,60 @@ const MainContent = memo(function MainContent({
 
   const getTabIcon = (tab: Tab) => {
     if ('tableName' in tab) {
-      return <Table2 size={12} className="text-accent-orange" />
+      return <Table2 size={13} className="text-warning-500" />
     }
     return null
   }
 
   return (
-    <div className="flex-1 flex flex-col bg-metro-dark">
-      {/* Metro 风格标签栏 */}
-      <div className="h-10 bg-metro-bg flex items-stretch px-1 border-b border-metro-border/50 overflow-x-auto">
+    <div className="flex-1 flex flex-col bg-white">
+      {/* 标签栏 */}
+      <div className="h-10 bg-light-surface flex items-stretch px-1 border-b border-border-default overflow-x-auto scrollbar-thin">
         <button
           onClick={() => onTabChange('welcome')}
-          className={`px-5 text-sm flex items-center transition-all duration-150 shrink-0 relative
+          className={`px-4 text-sm flex items-center gap-1.5 transition-all shrink-0 relative
             ${activeTab === 'welcome' 
-              ? 'bg-metro-dark text-white font-medium' 
-              : 'text-text-secondary hover:text-white hover:bg-metro-hover'}`}
+              ? 'text-text-primary font-medium' 
+              : 'text-text-tertiary hover:text-text-secondary hover:bg-light-hover'}`}
         >
+          <Database size={14} className={activeTab === 'welcome' ? 'text-primary-500' : ''} />
           主页
-          {activeTab === 'welcome' && (
-            <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-accent-blue" />
-          )}
+          {activeTab === 'welcome' && <span className="tab-indicator" />}
         </button>
+
+        <div className="w-px h-5 bg-border-light self-center mx-1" />
 
         {tabs.map(tab => (
           <div
             key={tab.id}
-            className={`px-4 flex items-center gap-2 text-sm group transition-all duration-150 shrink-0 relative
+            className={`px-3 flex items-center gap-2 text-sm group transition-all shrink-0 relative cursor-pointer
               ${activeTab === tab.id 
-                ? 'bg-metro-dark text-white font-medium' 
-                : 'text-text-secondary hover:text-white hover:bg-metro-hover'}`}
+                ? 'text-text-primary font-medium' 
+                : 'text-text-tertiary hover:text-text-secondary hover:bg-light-hover'}`}
+            onClick={() => onTabChange(tab.id)}
           >
-            <button onClick={() => onTabChange(tab.id)} className="flex items-center gap-2">
-              {getTabIcon(tab)}
-              <span className="max-w-[120px] truncate">{getTabTitle(tab)}</span>
-            </button>
+            {getTabIcon(tab)}
+            <span className="max-w-[120px] truncate">{getTabTitle(tab)}</span>
             <button
-              onClick={() => onCloseTab(tab.id)}
-              className="opacity-0 group-hover:opacity-100 hover:text-accent-red p-0.5 rounded-sm hover:bg-white/10 transition-all"
+              onClick={(e) => { e.stopPropagation(); onCloseTab(tab.id) }}
+              className="opacity-0 group-hover:opacity-100 hover:text-danger-500 p-0.5 rounded transition-all"
             >
-              <X size={14} />
+              <X size={13} />
             </button>
-            {activeTab === tab.id && (
-              <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-accent-blue" />
-            )}
+            {activeTab === tab.id && <span className="tab-indicator" />}
           </div>
         ))}
 
         <button
           onClick={onNewQuery}
-          className="w-10 flex items-center justify-center text-text-tertiary hover:text-white hover:bg-metro-hover shrink-0 transition-colors"
-          title="新建查询 (Ctrl+Q)"
+          className="w-9 flex items-center justify-center text-text-muted hover:text-primary-500 hover:bg-light-hover shrink-0 transition-colors rounded-lg mx-1 my-1"
+          title="新建查询"
         >
-          <Plus size={18} />
+          <Plus size={16} />
         </button>
       </div>
 
-      {/* 内容区域 */}
+      {/* 内容区 */}
       <div className="flex-1 min-h-0">
         {activeTab === 'welcome' ? (
           <WelcomeScreen onNewQuery={onNewQuery} onNewConnectionWithType={onNewConnectionWithType} />
@@ -198,7 +189,7 @@ const MainContent = memo(function MainContent({
   )
 })
 
-// 欢迎屏幕组件
+// 欢迎屏幕
 const WelcomeScreen = memo(function WelcomeScreen({ 
   onNewQuery, 
   onNewConnectionWithType 
@@ -207,84 +198,81 @@ const WelcomeScreen = memo(function WelcomeScreen({
   onNewConnectionWithType?: (type: DatabaseType) => void
 }) {
   return (
-    <div className="h-full flex flex-col items-center justify-center bg-gradient-to-b from-metro-dark via-metro-dark to-metro-bg relative overflow-hidden">
-      {/* 背景装饰 */}
-      <div className="absolute inset-0 pointer-events-none">
-        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-accent-blue/5 rounded-full blur-3xl" />
-        <div className="absolute bottom-1/4 right-1/4 w-64 h-64 bg-accent-purple/5 rounded-full blur-3xl" />
+    <div className="h-full flex flex-col items-center justify-center bg-gradient-to-b from-white via-light-surface to-light-elevated">
+      {/* Logo */}
+      <div className="flex items-center gap-4 mb-4">
+        <div className="w-16 h-16 rounded-2xl bg-primary-500 flex items-center justify-center shadow-btn">
+          <Database size={32} className="text-white" />
+        </div>
       </div>
       
-      {/* Logo 区域 */}
-      <div className="flex items-center gap-4 mb-3 relative z-10">
-        <div className="p-3 bg-gradient-to-br from-accent-blue/20 to-accent-blue/5 rounded-lg">
-          <Database size={48} className="text-accent-blue" />
-        </div>
-        <h1 className="text-5xl font-light tracking-tight text-white">EasySQL</h1>
-      </div>
-      <p className="text-text-tertiary mb-10 text-lg relative z-10">简洁高效的数据库管理工具</p>
+      <h1 className="text-4xl font-bold text-text-primary mb-2">EasySQL</h1>
+      <p className="text-text-tertiary text-lg mb-8">简洁高效的数据库管理工具</p>
 
       <button
         onClick={onNewQuery}
-        className="px-10 py-3.5 bg-accent-blue hover:bg-accent-blue-hover text-base font-medium 
-                   transition-all duration-200 shadow-metro hover:shadow-metro-lg relative z-10
-                   hover:translate-y-[-2px]"
+        className="px-8 py-3 bg-primary-500 hover:bg-primary-600 text-white text-base font-medium 
+                   rounded-xl shadow-btn hover:shadow-btn-hover transition-all flex items-center gap-2"
       >
+        <Zap size={18} />
         开始查询
       </button>
 
-      {/* 数据库磁贴 */}
-      <p className="mt-14 text-text-disabled text-sm tracking-wide relative z-10">快速创建数据库连接</p>
-      <div className="mt-5 grid grid-cols-5 gap-2 relative z-10">
-        {(Object.entries(DB_INFO) as [DatabaseType, typeof DB_INFO[DatabaseType]][]).slice(0, 5).map(([key, info]) => (
-          <button
-            key={key}
-            onClick={() => info.supported && onNewConnectionWithType?.(key)}
-            className={`metro-tile w-24 h-24 flex flex-col items-center justify-center shadow-metro relative
-              ${info.supported ? 'cursor-pointer' : 'cursor-not-allowed'}`}
-            style={{ 
-              backgroundColor: info.color,
-              opacity: info.supported ? 1 : 0.4,
-              filter: info.supported ? 'none' : 'grayscale(50%)'
-            }}
-            title={info.supported ? `创建 ${info.name} 连接` : `${info.name} - 即将支持`}
-            disabled={!info.supported}
-          >
-            <span className="text-3xl mb-2">{info.icon}</span>
-            <span className="text-xs font-medium text-white/90">{info.name}</span>
-            {!info.supported && (
-              <span className="absolute bottom-1 text-[10px] text-white/60">即将支持</span>
-            )}
-          </button>
-        ))}
+      {/* 快捷键 */}
+      <div className="flex items-center gap-6 mt-6 text-xs text-text-muted">
+        <span className="flex items-center gap-2">
+          <kbd className="px-2 py-1 bg-light-elevated rounded border border-border-default font-mono">Ctrl+Q</kbd>
+          新建查询
+        </span>
+        <span className="flex items-center gap-2">
+          <kbd className="px-2 py-1 bg-light-elevated rounded border border-border-default font-mono">Ctrl+Enter</kbd>
+          执行
+        </span>
       </div>
-      <div className="grid grid-cols-4 gap-2 mt-2 relative z-10">
-        {(Object.entries(DB_INFO) as [DatabaseType, typeof DB_INFO[DatabaseType]][]).slice(5, 9).map(([key, info]) => (
-          <button
-            key={key}
-            onClick={() => info.supported && onNewConnectionWithType?.(key)}
-            className={`metro-tile w-24 h-24 flex flex-col items-center justify-center shadow-metro relative
-              ${info.supported ? 'cursor-pointer' : 'cursor-not-allowed'}`}
-            style={{ 
-              backgroundColor: info.color,
-              opacity: info.supported ? 1 : 0.4,
-              filter: info.supported ? 'none' : 'grayscale(50%)'
-            }}
-            title={info.supported ? `创建 ${info.name} 连接` : `${info.name} - 即将支持`}
-            disabled={!info.supported}
-          >
-            <span className="text-3xl mb-2">{info.icon}</span>
-            <span className="text-xs font-medium text-white/90">{info.name}</span>
-            {!info.supported && (
-              <span className="absolute bottom-1 text-[10px] text-white/60">即将支持</span>
-            )}
-          </button>
-        ))}
+
+      {/* 数据库磁贴 */}
+      <div className="mt-12">
+        <p className="text-center text-text-muted text-sm mb-4 font-medium">支持的数据库</p>
+        
+        <div className="flex gap-3 justify-center mb-3">
+          {(Object.entries(DB_INFO) as [DatabaseType, typeof DB_INFO[DatabaseType]][]).slice(0, 5).map(([key, info]) => (
+            <button
+              key={key}
+              onClick={() => info.supported && onNewConnectionWithType?.(key)}
+              className={`db-tile w-20 h-20 flex flex-col items-center justify-center
+                ${info.supported ? '' : 'cursor-not-allowed opacity-40'}`}
+              style={{ background: info.color }}
+              title={info.supported ? `创建 ${info.name} 连接` : `${info.name} - 即将支持`}
+              disabled={!info.supported}
+            >
+              <span className="text-3xl mb-1">{info.icon}</span>
+              <span className="text-[10px] font-medium text-white/90">{info.name}</span>
+            </button>
+          ))}
+        </div>
+        
+        <div className="flex gap-3 justify-center">
+          {(Object.entries(DB_INFO) as [DatabaseType, typeof DB_INFO[DatabaseType]][]).slice(5, 9).map(([key, info]) => (
+            <button
+              key={key}
+              onClick={() => info.supported && onNewConnectionWithType?.(key)}
+              className={`db-tile w-20 h-20 flex flex-col items-center justify-center
+                ${info.supported ? '' : 'cursor-not-allowed opacity-40'}`}
+              style={{ background: info.color }}
+              title={info.supported ? `创建 ${info.name} 连接` : `${info.name} - 即将支持`}
+              disabled={!info.supported}
+            >
+              <span className="text-3xl mb-1">{info.icon}</span>
+              <span className="text-[10px] font-medium text-white/90">{info.name}</span>
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   )
 })
 
-// 表格查看器组件
+// 表格查看器
 const TableViewer = memo(function TableViewer({ 
   tab, 
   isLoading,
@@ -318,7 +306,6 @@ const TableViewer = memo(function TableViewer({
   const hasChanges = (tab.pendingChanges?.size || 0) > 0 || (tab.deletedRows?.size || 0) > 0 || (tab.newRows?.length || 0) > 0
   const primaryKeyCol = tab.columns.find(c => c.key === 'PRI')?.name || tab.columns[0]?.name
   
-  // 计算修改过的单元格
   const modifiedCells = new Set<string>()
   tab.pendingChanges?.forEach((changes, rowKey) => {
     const rowIndex = parseInt(rowKey)
@@ -327,10 +314,10 @@ const TableViewer = memo(function TableViewer({
     })
   })
   
-  // 标记新增行的单元格
   const newRowCount = tab.newRows?.length || 0
+  const existingDataCount = tab.data.filter((_, i) => !tab.deletedRows?.has(i)).length
+  
   if (newRowCount > 0) {
-    const existingDataCount = tab.data.filter((_, i) => !tab.deletedRows?.has(i)).length
     for (let i = 0; i < newRowCount; i++) {
       const rowIndex = existingDataCount + i
       tab.columns.forEach(col => {
@@ -339,57 +326,49 @@ const TableViewer = memo(function TableViewer({
     }
   }
   
-  // 过滤掉已删除的行，并添加新增的行
   const visibleData = [...tab.data.filter((_, i) => !tab.deletedRows?.has(i)), ...(tab.newRows || [])]
   const originalIndexMap = tab.data.map((_, i) => i).filter(i => !tab.deletedRows?.has(i))
-  
-  // 计算修改统计
   const changesCount = (tab.pendingChanges?.size || 0) + (tab.deletedRows?.size || 0) + (tab.newRows?.length || 0)
-  const existingDataCount = tab.data.filter((_, i) => !tab.deletedRows?.has(i)).length
   
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* 表信息栏 - 紧凑布局 */}
-      <div className="bg-metro-bg border-b border-metro-border/50 flex items-center justify-between px-3 gap-2" style={{ flexShrink: 0, height: 36 }}>
-        {/* 左侧：表名 */}
-        <div className="flex items-center gap-2 min-w-0">
-          <Table2 size={16} className="text-accent-orange flex-shrink-0" />
-          <span className="font-medium text-white text-sm truncate">{tab.tableName}</span>
-          <span className="text-text-tertiary text-xs flex-shrink-0">({tab.total.toLocaleString()}行)</span>
+      {/* 工具栏 */}
+      <div className="bg-light-surface border-b border-border-default flex items-center justify-between px-4 gap-3" style={{ flexShrink: 0, height: 44 }}>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-border-default">
+            <Table2 size={15} className="text-warning-500" />
+            <span className="font-medium text-text-primary text-sm">{tab.tableName}</span>
+          </div>
+          <span className="text-text-muted text-xs">{tab.total.toLocaleString()} 行</span>
           {isLoading && (
-            <div className="flex items-center gap-1.5 text-accent-blue text-xs flex-shrink-0">
-              <Loader2 size={12} className="animate-spin" />
+            <div className="flex items-center gap-1.5 text-primary-500 text-xs">
+              <Loader2 size={13} className="animate-spin" />
               加载中...
             </div>
           )}
         </div>
         
-        {/* 中间：修改提示 */}
         {hasChanges && (
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <span className="text-xs text-accent-orange font-medium px-1.5 py-0.5 bg-accent-orange/10 rounded">
-              {changesCount}项待保存
-              {newRowCount > 0 && <span className="ml-1 text-accent-green">+{newRowCount}新增</span>}
-            </span>
+          <div className="px-2.5 py-1 bg-warning-50 text-warning-600 text-xs font-medium rounded-md border border-warning-200">
+            {changesCount} 项待保存
           </div>
         )}
         
-        {/* 右侧：分页控件 - 固定宽度 */}
-        <div className="flex items-center gap-1 flex-shrink-0">
+        <div className="flex items-center gap-1.5">
           <button
             onClick={() => onLoadPage(tab.page - 1)}
             disabled={tab.page <= 1 || isLoading}
-            className="p-0.5 hover:bg-metro-hover disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className="p-1 hover:bg-light-hover disabled:opacity-30 rounded transition-colors"
           >
             <ChevronLeft size={16} />
           </button>
-          <span className="text-xs whitespace-nowrap min-w-[70px] text-center">
-            <span className="text-accent-blue font-medium">{tab.page}</span>/{totalPages}页
+          <span className="text-xs min-w-[70px] text-center">
+            <span className="text-primary-600 font-medium">{tab.page}</span> / {totalPages}
           </span>
           <button
             onClick={() => onLoadPage(tab.page + 1)}
             disabled={tab.page >= totalPages || isLoading}
-            className="p-0.5 hover:bg-metro-hover disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className="p-1 hover:bg-light-hover disabled:opacity-30 rounded transition-colors"
           >
             <ChevronRight size={16} />
           </button>
@@ -397,25 +376,22 @@ const TableViewer = memo(function TableViewer({
             value={tab.pageSize}
             onChange={(e) => onChangePageSize?.(parseInt(e.target.value))}
             disabled={isLoading}
-            className="h-6 px-1 text-xs bg-metro-surface border border-metro-border text-white rounded cursor-pointer hover:border-text-tertiary focus:border-accent-blue outline-none disabled:opacity-50"
-            title="每页条数"
+            className="h-7 px-2 text-xs bg-white border border-border-default rounded cursor-pointer"
           >
             <option value={100}>100</option>
             <option value={500}>500</option>
             <option value={1000}>1000</option>
             <option value={2000}>2000</option>
-            <option value={5000}>5000</option>
           </select>
         </div>
       </div>
 
-      {/* 数据表格 - 使用虚拟滚动 */}
+      {/* 表格 */}
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-        {/* Loading 遮罩 */}
         {isLoading && (
-          <div className="absolute inset-0 bg-metro-dark/80 flex items-center justify-center z-50">
+          <div className="loading-overlay">
             <div className="flex flex-col items-center gap-3">
-              <Loader2 size={32} className="animate-spin text-accent-blue" />
+              <Loader2 size={28} className="animate-spin text-primary-500" />
               <span className="text-sm text-text-secondary">加载数据中...</span>
             </div>
           </div>
@@ -429,60 +405,39 @@ const TableViewer = memo(function TableViewer({
             primaryKeyColumn={primaryKeyCol}
             modifiedCells={modifiedCells}
             onCellChange={(visibleRowIndex, colName, value) => {
-              // 判断是修改现有行还是新增行
               if (visibleRowIndex >= existingDataCount) {
-                // 这是新增的行
-                const newRowIndex = visibleRowIndex - existingDataCount
-                onUpdateNewRow?.(newRowIndex, colName, value)
+                onUpdateNewRow?.(visibleRowIndex - existingDataCount, colName, value)
               } else {
-                const originalIndex = originalIndexMap[visibleRowIndex]
-                onCellChange?.(originalIndex, colName, value)
+                onCellChange?.(originalIndexMap[visibleRowIndex], colName, value)
               }
             }}
             onDeleteRow={(visibleRowIndex) => {
               if (visibleRowIndex >= existingDataCount) {
-                // 删除新增的行
-                const newRowIndex = visibleRowIndex - existingDataCount
-                onDeleteNewRow?.(newRowIndex)
+                onDeleteNewRow?.(visibleRowIndex - existingDataCount)
               } else {
-                const originalIndex = originalIndexMap[visibleRowIndex]
-                onDeleteRow?.(originalIndex)
+                onDeleteRow?.(originalIndexMap[visibleRowIndex])
               }
             }}
             onDeleteRows={(visibleRowIndices) => {
               const originalIndices: number[] = []
               const newRowIndices: number[] = []
-              
               visibleRowIndices.forEach(i => {
-                if (i >= existingDataCount) {
-                  newRowIndices.push(i - existingDataCount)
-                } else {
-                  originalIndices.push(originalIndexMap[i])
-                }
+                if (i >= existingDataCount) newRowIndices.push(i - existingDataCount)
+                else originalIndices.push(originalIndexMap[i])
               })
-              
-              if (originalIndices.length > 0) {
-                onDeleteRows?.(originalIndices)
-              }
-              // 从后往前删除新增行，避免索引问题
-              newRowIndices.sort((a, b) => b - a).forEach(i => {
-                onDeleteNewRow?.(i)
-              })
+              if (originalIndices.length > 0) onDeleteRows?.(originalIndices)
+              newRowIndices.sort((a, b) => b - a).forEach(i => onDeleteNewRow?.(i))
             }}
             onRefresh={onRefresh}
             onSave={onSave}
             onAddRow={onAddRow}
             onBatchUpdate={(updates) => {
               updates.forEach(({ rowIndex, colName, value }) => {
-                // 判断是修改现有行还是新增行
                 if (rowIndex >= existingDataCount) {
-                  const newRowIndex = rowIndex - existingDataCount
-                  onUpdateNewRow?.(newRowIndex, colName, value)
+                  onUpdateNewRow?.(rowIndex - existingDataCount, colName, value)
                 } else {
                   const originalIndex = originalIndexMap[rowIndex]
-                  if (originalIndex !== undefined) {
-                    onCellChange?.(originalIndex, colName, value)
-                  }
+                  if (originalIndex !== undefined) onCellChange?.(originalIndex, colName, value)
                 }
               })
             }}
@@ -490,82 +445,35 @@ const TableViewer = memo(function TableViewer({
         </div>
       </div>
 
-      {/* 底部操作栏 - 参考 Navicat 风格 */}
-      <div className="bg-metro-bg border-t border-metro-border/50 flex items-center px-2 gap-1" style={{ flexShrink: 0, height: 32 }}>
-        {/* 左侧：数据操作按钮 */}
+      {/* 底部操作栏 */}
+      <div className="bg-light-surface border-t border-border-default flex items-center px-3 gap-1" style={{ flexShrink: 0, height: 36 }}>
         <div className="flex items-center gap-0.5">
-          <button
-            onClick={onAddRow}
-            disabled={isLoading}
-            className="w-7 h-7 flex items-center justify-center hover:bg-metro-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors rounded text-text-secondary hover:text-white"
-            title="添加行"
-          >
-            <Plus size={16} />
+          <button onClick={onAddRow} disabled={isLoading}
+            className="w-7 h-7 flex items-center justify-center hover:bg-light-hover disabled:opacity-40 rounded text-text-tertiary hover:text-success-500">
+            <Plus size={15} />
           </button>
-          <button
-            onClick={() => {
-              // 如果有选中行，删除选中的行（此功能已在VirtualDataTable中的右键菜单中实现）
-              // 这里作为快捷按钮，可以删除最后一个新增行
-              if (newRowCount > 0) {
-                onDeleteNewRow?.(newRowCount - 1)
-              }
-            }}
-            disabled={isLoading || newRowCount === 0}
-            className="w-7 h-7 flex items-center justify-center hover:bg-metro-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors rounded text-text-secondary hover:text-white"
-            title="删除行"
-          >
-            <Minus size={16} />
+          <button onClick={() => newRowCount > 0 && onDeleteNewRow?.(newRowCount - 1)} disabled={isLoading || newRowCount === 0}
+            className="w-7 h-7 flex items-center justify-center hover:bg-light-hover disabled:opacity-40 rounded text-text-tertiary hover:text-danger-500">
+            <Minus size={15} />
           </button>
-          
-          <div className="w-px h-4 bg-metro-border mx-1" />
-          
-          <button
-            onClick={onSave}
-            disabled={isLoading || !hasChanges}
-            className={`w-7 h-7 flex items-center justify-center transition-colors rounded ${
-              hasChanges 
-                ? 'hover:bg-accent-green/20 text-accent-green' 
-                : 'text-text-tertiary opacity-40 cursor-not-allowed'
-            }`}
-            title="保存修改 (Ctrl+S)"
-          >
-            <Check size={16} />
+          <div className="w-px h-4 bg-border-default mx-1" />
+          <button onClick={onSave} disabled={isLoading || !hasChanges}
+            className={`w-7 h-7 flex items-center justify-center rounded ${hasChanges ? 'hover:bg-success-50 text-success-500' : 'text-text-disabled'}`}>
+            <Check size={15} />
           </button>
-          <button
-            onClick={onDiscard}
-            disabled={isLoading || !hasChanges}
-            className={`w-7 h-7 flex items-center justify-center transition-colors rounded ${
-              hasChanges 
-                ? 'hover:bg-accent-red/20 text-accent-red' 
-                : 'text-text-tertiary opacity-40 cursor-not-allowed'
-            }`}
-            title="放弃修改"
-          >
-            <X size={16} />
+          <button onClick={onDiscard} disabled={isLoading || !hasChanges}
+            className={`w-7 h-7 flex items-center justify-center rounded ${hasChanges ? 'hover:bg-danger-50 text-danger-500' : 'text-text-disabled'}`}>
+            <X size={15} />
           </button>
-          <button
-            onClick={onRefresh}
-            disabled={isLoading}
-            className="w-7 h-7 flex items-center justify-center hover:bg-metro-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors rounded text-text-secondary hover:text-white"
-            title="刷新数据"
-          >
-            <RefreshCw size={14} />
+          <button onClick={onRefresh} disabled={isLoading}
+            className="w-7 h-7 flex items-center justify-center hover:bg-light-hover disabled:opacity-40 rounded text-text-tertiary">
+            <RefreshCw size={13} />
           </button>
         </div>
-        
-        {/* 中间：状态信息 */}
-        <div className="flex-1 flex items-center justify-center text-xs text-text-tertiary">
-          {hasChanges ? (
-            <span className="text-accent-orange">
-              {tab.pendingChanges?.size || 0}修改 · {tab.deletedRows?.size || 0}删除 · {newRowCount}新增
-            </span>
-          ) : (
-            <span>共 {visibleData.length} 行</span>
-          )}
+        <div className="flex-1 text-center text-xs text-text-muted">
+          {hasChanges ? `${tab.pendingChanges?.size || 0} 修改 · ${tab.deletedRows?.size || 0} 删除 · ${newRowCount} 新增` : `共 ${visibleData.length} 行`}
         </div>
-        
-        {/* 右侧：SQL 提示 */}
-        <div className="text-xs text-text-disabled">
+        <div className="text-xs text-text-disabled font-mono">
           SELECT * FROM `{tab.tableName}` LIMIT {tab.pageSize}
         </div>
       </div>
@@ -573,15 +481,9 @@ const TableViewer = memo(function TableViewer({
   )
 })
 
-// 查询编辑器组件
+// 查询编辑器
 const QueryEditor = memo(function QueryEditor({ 
-  tab, 
-  databases, 
-  tables, 
-  columns, 
-  onRun, 
-  onUpdateSql, 
-  onUpdateTitle 
+  tab, databases, tables, columns, onRun, onUpdateSql, onUpdateTitle 
 }: { 
   tab: QueryTab
   databases: string[]
@@ -620,12 +522,7 @@ const QueryEditor = memo(function QueryEditor({
 
   const handleFormat = useCallback(() => {
     try {
-      const formatted = format(sql, {
-        language: 'mysql',
-        tabWidth: 2,
-        keywordCase: 'upper',
-        linesBetweenQueries: 2,
-      })
+      const formatted = format(sql, { language: 'mysql', tabWidth: 2, keywordCase: 'upper', linesBetweenQueries: 2 })
       setSql(formatted)
       onUpdateSql(formatted)
     } catch (err) {
@@ -643,203 +540,122 @@ const QueryEditor = memo(function QueryEditor({
 
   const handleExportCsv = useCallback(async () => {
     if (!tab.results || tab.results.rows.length === 0) return
-    
     const electronAPI = (window as any).electronAPI
     if (!electronAPI) return
-    
-    const path = await electronAPI.saveDialog({
-      filters: [{ name: 'CSV', extensions: ['csv'] }],
-      defaultPath: `query_results_${Date.now()}.csv`
-    })
+    const path = await electronAPI.saveDialog({ filters: [{ name: 'CSV', extensions: ['csv'] }], defaultPath: `query_${Date.now()}.csv` })
     if (!path) return
-    
-    const columnNames = tab.results.columns
-    const header = columnNames.join(',')
-    const rows = tab.results.rows.map(row => 
-      row.map((v: any) => {
-        if (v === null) return ''
-        if (typeof v === 'string') return `"${v.replace(/"/g, '""')}"`
-        return String(v)
-      }).join(',')
-    ).join('\n')
-    
+    const header = tab.results.columns.join(',')
+    const rows = tab.results.rows.map(row => row.map((v: any) => v === null ? '' : typeof v === 'string' ? `"${v.replace(/"/g, '""')}"` : String(v)).join(',')).join('\n')
     await electronAPI.writeFile(path, `${header}\n${rows}`)
   }, [tab.results])
 
   const handleExportSql = useCallback(async () => {
     if (!tab.results || tab.results.rows.length === 0) return
-    
     const electronAPI = (window as any).electronAPI
     if (!electronAPI) return
-    
-    const path = await electronAPI.saveDialog({
-      filters: [{ name: 'SQL', extensions: ['sql'] }],
-      defaultPath: `query_results_${Date.now()}.sql`
-    })
+    const path = await electronAPI.saveDialog({ filters: [{ name: 'SQL', extensions: ['sql'] }], defaultPath: `query_${Date.now()}.sql` })
     if (!path) return
-    
-    const tableName = 'table_name'
-    const columnNames = tab.results.columns
-    const rows = tab.results.rows
-    
-    let sqlContent = `-- 导出时间: ${new Date().toLocaleString()}\n`
-    sqlContent += `-- 共 ${rows.length} 条记录\n\n`
-    
-    rows.forEach(row => {
-      const values = row.map((val: any) => {
-        if (val === null) return 'NULL'
-        if (typeof val === 'number') return val
-        return `'${String(val).replace(/'/g, "''")}'`
-      }).join(', ')
-      sqlContent += `INSERT INTO \`${tableName}\` (\`${columnNames.join('`, `')}\`) VALUES (${values});\n`
+    let sqlContent = `-- ${new Date().toLocaleString()}\n-- ${tab.results.rows.length} 条\n\n`
+    tab.results.rows.forEach(row => {
+      const values = row.map((val: any) => val === null ? 'NULL' : typeof val === 'number' ? val : `'${String(val).replace(/'/g, "''")}'`).join(', ')
+      sqlContent += `INSERT INTO table_name (\`${tab.results!.columns.join('`, `')}\`) VALUES (${values});\n`
     })
-    
     await electronAPI.writeFile(path, sqlContent)
   }, [tab.results])
 
-  // 结果数据转换为表格格式
   const resultData = tab.results?.rows.map(row => {
     const obj: Record<string, any> = {}
-    tab.results?.columns.forEach((col, i) => {
-      obj[col] = row[i]
-    })
+    tab.results?.columns.forEach((col, i) => { obj[col] = row[i] })
     return obj
   }) || []
 
   const resultColumns = tab.results?.columns.map(col => {
     const colInfo = findColumnInfo(col)
-    return {
-      name: col,
-      type: colInfo?.type,
-      key: colInfo?.key,
-      comment: colInfo?.comment,
-    }
+    return { name: col, type: colInfo?.type, key: colInfo?.key, comment: colInfo?.comment }
   }) || []
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* SQL 编辑区 */}
-      <div style={{ height: '200px', flexShrink: 0, display: 'flex', flexDirection: 'column', borderBottom: '1px solid #5d5d5d' }}>
-        <div className="h-10 bg-metro-bg flex items-center px-2 gap-2" style={{ flexShrink: 0 }}>
-          <button
-            onClick={handleRun}
-            className="h-7 px-4 bg-accent-green hover:bg-accent-green/90 flex items-center gap-1.5 text-sm transition-colors"
-            title="执行 SQL (Ctrl+Enter)"
-          >
-            <Play size={14} fill="currentColor" />
+      {/* 工具栏 */}
+      <div style={{ height: '200px', flexShrink: 0, display: 'flex', flexDirection: 'column', borderBottom: '1px solid #e2e8f0' }}>
+        <div className="h-11 bg-light-surface flex items-center px-3 gap-2" style={{ flexShrink: 0 }}>
+          <button onClick={handleRun}
+            className="h-8 px-4 bg-success-500 hover:bg-success-600 text-white flex items-center gap-1.5 text-sm font-medium rounded-lg shadow-sm transition-all">
+            <Play size={13} fill="currentColor" />
             执行
           </button>
-          
-          <div className="w-px h-5 bg-white/20 mx-1" />
-          
-          <button
-            onClick={handleOpenFile}
-            className="h-7 px-3 bg-metro-surface hover:bg-metro-surface/80 flex items-center gap-1.5 text-sm transition-colors"
-            title="打开 SQL 文件 (Ctrl+O)"
-          >
+          <div className="w-px h-5 bg-border-default mx-1" />
+          <button onClick={handleOpenFile}
+            className="h-8 px-3 bg-white hover:bg-light-hover border border-border-default flex items-center gap-1.5 text-sm rounded-lg transition-colors">
             <FolderOpen size={14} />
             打开
           </button>
-          
-          <button
-            onClick={handleSaveFile}
-            className="h-7 px-3 bg-metro-surface hover:bg-metro-surface/80 flex items-center gap-1.5 text-sm transition-colors"
-            title="保存 SQL 文件 (Ctrl+S)"
-          >
+          <button onClick={handleSaveFile}
+            className="h-8 px-3 bg-white hover:bg-light-hover border border-border-default flex items-center gap-1.5 text-sm rounded-lg transition-colors">
             <Save size={14} />
             保存
           </button>
-          
-          <button
-            onClick={handleFormat}
-            className="h-7 px-3 bg-metro-surface hover:bg-metro-surface/80 flex items-center gap-1.5 text-sm transition-colors"
-            title="格式化 SQL (Ctrl+Shift+F)"
-          >
+          <button onClick={handleFormat}
+            className="h-8 px-3 bg-white hover:bg-light-hover border border-border-default flex items-center gap-1.5 text-sm rounded-lg transition-colors">
             <AlignLeft size={14} />
             格式化
           </button>
-          
-          <div className="w-px h-5 bg-white/20 mx-1" />
-          
-          {/* 导出按钮 */}
+          <div className="w-px h-5 bg-border-default mx-1" />
           <div className="relative">
-            <button
-              onClick={() => setShowExportMenu(!showExportMenu)}
-              className="h-7 px-3 bg-metro-surface hover:bg-metro-surface/80 flex items-center gap-1.5 text-sm transition-colors disabled:opacity-40"
-              title="导出结果"
-              disabled={!tab.results || tab.results.rows.length === 0}
-            >
+            <button onClick={() => setShowExportMenu(!showExportMenu)} disabled={!tab.results || tab.results.rows.length === 0}
+              className="h-8 px-3 bg-white hover:bg-light-hover border border-border-default flex items-center gap-1.5 text-sm rounded-lg transition-colors disabled:opacity-40">
               <Download size={14} />
               导出
             </button>
             {showExportMenu && (
               <>
                 <div className="fixed inset-0" onClick={() => setShowExportMenu(false)} />
-                <div className="absolute top-full left-0 mt-1 bg-metro-surface border border-metro-border rounded shadow-lg z-50 min-w-[140px] animate-fade-in">
-                  <button
-                    onClick={() => { handleExportCsv(); setShowExportMenu(false) }}
-                    className="w-full px-3 py-2 text-left text-sm hover:bg-accent-blue/20 flex items-center gap-2"
-                  >
-                    <FileSpreadsheet size={14} className="text-accent-green" />
-                    导出 CSV
+                <div className="absolute top-full left-0 mt-1 bg-white border border-border-default rounded-lg shadow-lg z-50 min-w-[120px] py-1 menu">
+                  <button onClick={() => { handleExportCsv(); setShowExportMenu(false) }}
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-light-hover flex items-center gap-2">
+                    <FileSpreadsheet size={14} className="text-success-500" /> CSV
                   </button>
-                  <button
-                    onClick={() => { handleExportSql(); setShowExportMenu(false) }}
-                    className="w-full px-3 py-2 text-left text-sm hover:bg-accent-blue/20 flex items-center gap-2"
-                  >
-                    <FileCode size={14} className="text-accent-orange" />
-                    导出 SQL
+                  <button onClick={() => { handleExportSql(); setShowExportMenu(false) }}
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-light-hover flex items-center gap-2">
+                    <FileCode size={14} className="text-warning-500" /> SQL
                   </button>
                 </div>
               </>
             )}
           </div>
-          
-          <span className="text-xs text-white/40 ml-auto">
-            {filePath && <span className="mr-3 text-accent-blue">{filePath.split(/[/\\]/).pop()}</span>}
-            Ctrl+Enter 执行 | Ctrl+S 保存
+          <span className="text-xs text-text-muted ml-auto">
+            {filePath && <span className="mr-3 text-primary-500 font-mono">{filePath.split(/[/\\]/).pop()}</span>}
+            <kbd className="px-1.5 py-0.5 bg-light-elevated rounded text-[10px] border border-border-light">Ctrl+Enter</kbd> 执行
           </span>
         </div>
         <div style={{ flex: 1, minHeight: 0 }}>
           <Suspense fallback={<EditorLoading />}>
-            <SqlEditor
-              value={sql}
-              onChange={setSql}
-              onRun={handleRun}
-              onSave={handleSaveFile}
-              onOpen={handleOpenFile}
-              onFormat={handleFormat}
-              databases={databases}
-              tables={tables}
-              columns={columns}
-            />
+            <SqlEditor value={sql} onChange={setSql} onRun={handleRun} onSave={handleSaveFile} onOpen={handleOpenFile} onFormat={handleFormat}
+              databases={databases} tables={tables} columns={columns} />
           </Suspense>
         </div>
       </div>
 
-      {/* 结果区 */}
+      {/* 结果 */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        <div className="h-9 bg-metro-bg flex items-center px-3 border-b border-metro-border" style={{ flexShrink: 0 }}>
-          <span className="text-sm text-white/60">
+        <div className="h-9 bg-light-surface flex items-center px-4 border-b border-border-default" style={{ flexShrink: 0 }}>
+          <span className="text-sm text-text-secondary flex items-center gap-2">
+            <Database size={14} className="text-primary-500" />
             结果
-            {tab.results && <span className="ml-2 text-white/40">({tab.results.rows.length.toLocaleString()} 行)</span>}
+            {tab.results && <span className="text-text-muted text-xs ml-2">({tab.results.rows.length.toLocaleString()} 行)</span>}
           </span>
         </div>
-        
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
           <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
             {tab.results ? (
-              <VirtualDataTable 
-                columns={resultColumns}
-                data={resultData}
-                showColumnInfo={true}
-                onRefresh={() => onRun(sql)}
-              />
+              <VirtualDataTable columns={resultColumns} data={resultData} showColumnInfo={true} onRefresh={() => onRun(sql)} />
             ) : (
-              <div className="h-full flex items-center justify-center text-white/30">
-                <div className="flex flex-col items-center gap-2">
-                  <Database size={32} className="text-white/20" />
-                  <span>执行查询以查看结果</span>
+              <div className="h-full flex items-center justify-center">
+                <div className="flex flex-col items-center gap-3">
+                  <div className="w-12 h-12 rounded-xl bg-light-elevated flex items-center justify-center">
+                    <Database size={24} className="text-text-disabled" />
+                  </div>
+                  <span className="text-text-muted">执行查询以查看结果</span>
                 </div>
               </div>
             )}

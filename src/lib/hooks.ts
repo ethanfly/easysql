@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { Connection, QueryTab, TableInfo, ColumnInfo, TableTab } from '../types'
+import api from './electron-api'
 
 // 防抖 Hook
 export function useDebounce<T>(value: T, delay: number): T {
@@ -215,3 +217,197 @@ export function useLocalStorage<T>(key: string, initialValue: T) {
   return [storedValue, setValue] as const
 }
 
+// ============================================
+// 业务 Hooks
+// ============================================
+
+// 连接管理 Hook
+export function useConnections() {
+  const [connections, setConnections] = useState<Connection[]>([])
+  const [connectedIds, setConnectedIds] = useState<Set<string>>(new Set())
+
+  // 加载保存的连接
+  useEffect(() => {
+    const loadConnections = async () => {
+      try {
+        const saved = await api.getConnections()
+        if (saved && Array.isArray(saved)) {
+          setConnections(saved)
+        }
+      } catch (err) {
+        console.error('加载连接失败:', err)
+      }
+    }
+    loadConnections()
+  }, [])
+
+  // 添加连接
+  const addConnection = useCallback((conn: Omit<Connection, 'id'>) => {
+    const newConn: Connection = { ...conn, id: `conn-${Date.now()}` } as Connection
+    setConnections(prev => {
+      const updated = [...prev, newConn]
+      api.saveConnections(updated)
+      return updated
+    })
+  }, [])
+
+  // 删除连接
+  const deleteConnection = useCallback((id: string) => {
+    setConnections(prev => {
+      const updated = prev.filter(c => c.id !== id)
+      api.saveConnections(updated)
+      return updated
+    })
+  }, [])
+
+  // 更新连接
+  const updateConnection = useCallback((conn: Connection) => {
+    setConnections(prev => {
+      const updated = prev.map(c => c.id === conn.id ? conn : c)
+      api.saveConnections(updated)
+      return updated
+    })
+  }, [])
+
+  return {
+    connections,
+    setConnections,
+    connectedIds,
+    setConnectedIds,
+    addConnection,
+    deleteConnection,
+    updateConnection
+  }
+}
+
+// 数据库操作 Hook
+export function useDatabaseOperations(showNotification: (type: 'success' | 'error' | 'info', msg: string) => void) {
+  const [databasesMap, setDatabasesMap] = useState<Map<string, string[]>>(new Map())
+  const [loadingDbSet, setLoadingDbSet] = useState<Set<string>>(new Set())
+
+  const fetchDatabases = useCallback(async (connectionId: string) => {
+    try {
+      const dbs = await api.getDatabases(connectionId)
+      setDatabasesMap(prev => new Map(prev).set(connectionId, dbs))
+    } catch (err) {
+      showNotification('error', '获取数据库列表失败')
+    }
+  }, [showNotification])
+
+  return {
+    databasesMap,
+    setDatabasesMap,
+    loadingDbSet,
+    setLoadingDbSet,
+    fetchDatabases
+  }
+}
+
+// 表操作 Hook
+export function useTableOperations(showNotification: (type: 'success' | 'error' | 'info', msg: string) => void) {
+  const [tablesMap, setTablesMap] = useState<Map<string, TableInfo[]>>(new Map())
+  const [columnsMap, setColumnsMap] = useState<Map<string, ColumnInfo[]>>(new Map())
+
+  const fetchTables = useCallback(async (connectionId: string, database: string) => {
+    try {
+      const tables = await api.getTables(connectionId, database)
+      setTablesMap(prev => new Map(prev).set(database, tables))
+    } catch (err) {
+      showNotification('error', '获取表列表失败')
+    }
+  }, [showNotification])
+
+  const fetchColumns = useCallback(async (connectionId: string, database: string, table: string) => {
+    try {
+      const cols = await api.getTableColumns(connectionId, database, table)
+      setColumnsMap(prev => new Map(prev).set(table, cols))
+    } catch (err) {
+      // 忽略列获取失败
+    }
+  }, [])
+
+  return {
+    tablesMap,
+    setTablesMap,
+    columnsMap,
+    setColumnsMap,
+    fetchTables,
+    fetchColumns
+  }
+}
+
+// Tab 操作 Hook
+export function useTabOperations() {
+  const [tabs, setTabs] = useState<(QueryTab | TableTab)[]>([])
+  const [activeTab, setActiveTab] = useState<string>('welcome')
+  const [loadingTables, setLoadingTables] = useState<Set<string>>(new Set())
+
+  return {
+    tabs,
+    setTabs,
+    activeTab,
+    setActiveTab,
+    loadingTables,
+    setLoadingTables
+  }
+}
+
+// 查询操作 Hook
+export function useQueryOperations(
+  tabs: (QueryTab | TableTab)[],
+  setTabs: React.Dispatch<React.SetStateAction<(QueryTab | TableTab)[]>>,
+  showNotification: (type: 'success' | 'error' | 'info', msg: string) => void
+) {
+  const runQuery = useCallback(async (tabId: string, connectionId: string, sql: string) => {
+    try {
+      const result = await api.executeQuery(connectionId, sql)
+      setTabs(prev => prev.map(t => {
+        if (t.id === tabId && !('tableName' in t)) {
+          return { ...t, results: result }
+        }
+        return t
+      }))
+    } catch (err) {
+      showNotification('error', '查询失败：' + (err as Error).message)
+    }
+  }, [setTabs, showNotification])
+
+  return { runQuery }
+}
+
+// 导入导出 Hook
+export function useImportExport(
+  connections: Connection[],
+  setConnections: React.Dispatch<React.SetStateAction<Connection[]>>,
+  showNotification: (type: 'success' | 'error' | 'info', msg: string) => void
+) {
+  const importConnections = useCallback(async () => {
+    try {
+      const result = await api.importConnections()
+      if (result && result.length > 0) {
+        setConnections(prev => {
+          const updated = [...prev, ...result]
+          api.saveConnections(updated)
+          return updated
+        })
+        showNotification('success', `已导入 ${result.length} 个连接`)
+      }
+    } catch (err) {
+      showNotification('error', '导入失败：' + (err as Error).message)
+    }
+  }, [setConnections, showNotification])
+
+  const exportConnections = useCallback(async (format: 'json' | 'ncx') => {
+    try {
+      await api.exportConnections(connections, format)
+      showNotification('success', '导出成功')
+    } catch (err) {
+      showNotification('error', '导出失败：' + (err as Error).message)
+    }
+  }, [connections, showNotification])
+
+  return {
+    importConnections,
+    exportConnections
+  }
+}

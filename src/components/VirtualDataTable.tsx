@@ -721,7 +721,7 @@ const VirtualDataTable = memo(function VirtualDataTable({
                   minWidth: colWidth,
                   position: isPinned ? 'sticky' : 'relative',
                   left: isPinned ? pinnedLeftOffsets[col.name] : 'auto',
-                  boxShadow: isPinned && scrollLeft > 0 ? '2px 0 4px rgba(0,0,0,0.3)' : 'none',
+                  boxShadow: isPinned && scrollLeft > 0 ? '2px 0 4px rgba(0,0,0,0.05)' : 'none',
                   height: headerHeight,
                 }}
                 title={isPinned ? `取消固定 ${col.name}` : `固定 ${col.name}`}
@@ -832,14 +832,14 @@ const VirtualDataTable = memo(function VirtualDataTable({
                         : formatDateTime(value, col.type || '')
                     }
                     
-                    // 计算背景色
+                    // 计算背景色 - 浅色主题
                     let bgColor = 'transparent'
-                    if (isCurrentMatch) bgColor = '#665500'
-                    else if (isSearchMatch) bgColor = 'rgba(255, 200, 0, 0.15)'
-                    else if (isActiveCell) bgColor = '#264f78'
-                    else if (isCellSelected) bgColor = 'rgba(38, 79, 120, 0.5)'
-                    else if (isModified) bgColor = 'rgba(249, 115, 22, 0.15)'
-                    else if (isPinned) bgColor = '#1e2d3d'
+                    if (isCurrentMatch) bgColor = '#fef08a'
+                    else if (isSearchMatch) bgColor = 'rgba(250, 204, 21, 0.2)'
+                    else if (isActiveCell) bgColor = 'rgba(59, 130, 246, 0.15)'
+                    else if (isCellSelected) bgColor = 'rgba(59, 130, 246, 0.1)'
+                    else if (isModified) bgColor = 'rgba(249, 115, 22, 0.1)'
+                    else if (isPinned) bgColor = '#f8fafc'
                     
                     return (
                       <div
@@ -853,8 +853,8 @@ const VirtualDataTable = memo(function VirtualDataTable({
                           minWidth: colWidth,
                           maxWidth: colWidth,
                           height: rowHeight,
-                          boxShadow: isPinned && scrollLeft > 0 ? '2px 0 4px rgba(0,0,0,0.3)' : 'none',
-                          outline: isActiveCell && !isEditing ? '1px solid #007acc' : 'none',
+                          boxShadow: isPinned && scrollLeft > 0 ? '2px 0 4px rgba(0,0,0,0.05)' : 'none',
+                          outline: isActiveCell && !isEditing ? '2px solid #3b82f6' : 'none',
                           outlineOffset: '-1px',
                           zIndex: isPinned ? 10 : 1,
                         }}

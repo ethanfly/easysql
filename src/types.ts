@@ -60,15 +60,24 @@ export interface TableTab {
   newRows?: any[] // 新增的行数据（尚未保存到数据库）
 }
 
-export const DB_INFO: Record<DatabaseType, { name: string; icon: string; color: string; port: number; supported: boolean }> = {
-  mysql: { name: 'MySQL', icon: '🐬', color: '#00758f', port: 3306, supported: true },
-  postgres: { name: 'PostgreSQL', icon: '🐘', color: '#336791', port: 5432, supported: true },
-  sqlite: { name: 'SQLite', icon: '💾', color: '#003b57', port: 0, supported: true },
-  mongodb: { name: 'MongoDB', icon: '🍃', color: '#47a248', port: 27017, supported: true },
-  redis: { name: 'Redis', icon: '⚡', color: '#dc382d', port: 6379, supported: true },
-  sqlserver: { name: 'SQL Server', icon: '📊', color: '#cc2927', port: 1433, supported: true },
-  oracle: { name: 'Oracle', icon: '🔶', color: '#f80000', port: 1521, supported: false },
-  mariadb: { name: 'MariaDB', icon: '🦭', color: '#c0765a', port: 3306, supported: true },
-  snowflake: { name: 'Snowflake', icon: '❄️', color: '#29b5e8', port: 443, supported: false },
+export const DB_INFO: Record<DatabaseType, { 
+  name: string
+  icon: string
+  color: string
+  defaultPort: number
+  supported: boolean
+  needsHost: boolean
+  needsAuth: boolean
+  needsFile: boolean
+}> = {
+  mysql: { name: 'MySQL', icon: '🐬', color: '#00758f', defaultPort: 3306, supported: true, needsHost: true, needsAuth: true, needsFile: false },
+  postgres: { name: 'PostgreSQL', icon: '🐘', color: '#336791', defaultPort: 5432, supported: true, needsHost: true, needsAuth: true, needsFile: false },
+  sqlite: { name: 'SQLite', icon: '💾', color: '#003b57', defaultPort: 0, supported: true, needsHost: false, needsAuth: false, needsFile: true },
+  mongodb: { name: 'MongoDB', icon: '🍃', color: '#47a248', defaultPort: 27017, supported: true, needsHost: true, needsAuth: true, needsFile: false },
+  redis: { name: 'Redis', icon: '⚡', color: '#dc382d', defaultPort: 6379, supported: true, needsHost: true, needsAuth: true, needsFile: false },
+  sqlserver: { name: 'SQL Server', icon: '📊', color: '#cc2927', defaultPort: 1433, supported: true, needsHost: true, needsAuth: true, needsFile: false },
+  oracle: { name: 'Oracle', icon: '🔶', color: '#f80000', defaultPort: 1521, supported: false, needsHost: true, needsAuth: true, needsFile: false },
+  mariadb: { name: 'MariaDB', icon: '🦭', color: '#c0765a', defaultPort: 3306, supported: true, needsHost: true, needsAuth: true, needsFile: false },
+  snowflake: { name: 'Snowflake', icon: '❄️', color: '#29b5e8', defaultPort: 443, supported: false, needsHost: true, needsAuth: true, needsFile: false },
 }
 

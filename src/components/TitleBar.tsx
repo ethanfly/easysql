@@ -1,4 +1,4 @@
-import { Minus, Square, X, Database, Copy } from 'lucide-react'
+import { Minus, Square, X, Database, Maximize2, Minimize2 } from 'lucide-react'
 import { memo, useState } from 'react'
 import api from '../lib/electron-api'
 
@@ -11,46 +11,44 @@ const TitleBar = memo(function TitleBar() {
   }
   
   return (
-    <div className="h-9 bg-metro-dark flex items-center justify-between drag select-none border-b border-metro-border/30 relative">
-      {/* 微妙的顶部高光效果 */}
-      <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/5 to-transparent" />
-      
-      {/* Logo */}
+    <div className="h-10 bg-white flex items-center justify-between drag select-none border-b border-border-default">
+      {/* Logo 区域 */}
       <div className="flex items-center h-full px-4 no-drag gap-2.5">
-        <div className="relative">
-          <Database size={16} className="text-accent-blue" />
-          <div className="absolute inset-0 bg-accent-blue/20 blur-md -z-10" />
+        <div className="w-7 h-7 rounded-lg bg-primary-500 flex items-center justify-center">
+          <Database size={15} className="text-white" />
         </div>
-        <span className="text-sm font-semibold tracking-wide text-white/90">EasySQL</span>
-        <span className="text-[10px] text-white/30 font-medium ml-1">v2.0</span>
+        <span className="text-sm font-semibold text-text-primary">EasySQL</span>
+        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-primary-50 text-primary-600">
+          v2.0
+        </span>
       </div>
 
-      {/* Window Controls - Windows 11 风格 */}
+      {/* 窗口控制按钮 */}
       <div className="flex h-full no-drag">
         <button
           onClick={() => api.minimize()}
-          className="w-12 h-full flex items-center justify-center hover:bg-white/10 transition-colors duration-150 group"
+          className="w-11 h-full flex items-center justify-center hover:bg-light-hover transition-colors"
           title="最小化"
         >
-          <Minus size={16} className="text-white/60 group-hover:text-white/90" />
+          <Minus size={15} className="text-text-tertiary" />
         </button>
         <button
           onClick={handleMaximize}
-          className="w-12 h-full flex items-center justify-center hover:bg-white/10 transition-colors duration-150 group"
+          className="w-11 h-full flex items-center justify-center hover:bg-light-hover transition-colors"
           title={isMaximized ? "还原" : "最大化"}
         >
           {isMaximized ? (
-            <Copy size={11} className="text-white/60 group-hover:text-white/90" />
+            <Minimize2 size={13} className="text-text-tertiary" />
           ) : (
-            <Square size={11} className="text-white/60 group-hover:text-white/90" />
+            <Maximize2 size={13} className="text-text-tertiary" />
           )}
         </button>
         <button
           onClick={() => api.close()}
-          className="w-12 h-full flex items-center justify-center hover:bg-accent-red transition-colors duration-150 group"
+          className="w-11 h-full flex items-center justify-center hover:bg-danger-500 hover:text-white transition-colors group"
           title="关闭"
         >
-          <X size={16} className="text-white/60 group-hover:text-white" />
+          <X size={15} className="text-text-tertiary group-hover:text-white" />
         </button>
       </div>
     </div>

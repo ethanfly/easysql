@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import TitleBar from './components/TitleBar'
 import Sidebar from './components/Sidebar'
 import MainContent from './components/MainContent'
@@ -6,954 +6,529 @@ import ConnectionModal from './components/ConnectionModal'
 import CreateDatabaseModal from './components/CreateDatabaseModal'
 import CreateTableModal from './components/CreateTableModal'
 import InputDialog from './components/InputDialog'
-import TableDesigner from './components/TableDesigner'
 import { Connection, QueryTab, DatabaseType, TableInfo, ColumnInfo, TableTab } from './types'
 import api from './lib/electron-api'
-import { useDebouncedCallback } from './lib/hooks'
-import { Edit3, Copy } from 'lucide-react'
+import { useConnections, useDatabaseOperations, useTableOperations, useTabOperations, useQueryOperations, useImportExport } from './lib/hooks'
+import { Database, Loader2, CheckCircle, XCircle, AlertCircle } from 'lucide-react'
 
-// 统一的标签页类型
-type Tab = QueryTab | TableTab
-
-export default function App() {
-  const [connections, setConnections] = useState<Connection[]>([])
+function App() {
   const [activeConnection, setActiveConnection] = useState<string | null>(null)
-  const [connectedIds, setConnectedIds] = useState<Set<string>>(new Set())
-  // 每个连接的数据库列表独立存储: connectionId -> databases[]
-  const [databasesMap, setDatabasesMap] = useState<Map<string, string[]>>(new Map())
   const [selectedDatabase, setSelectedDatabase] = useState<string | null>(null)
-  // 每个数据库的表列表独立存储: "connectionId:database" -> tables[]
-  const [tablesMap, setTablesMap] = useState<Map<string, TableInfo[]>>(new Map())
-  const [loadingDbSet, setLoadingDbSet] = useState<Set<string>>(new Set())
-  const [loadingTables, setLoadingTables] = useState<Set<string>>(new Set())  // 正在加载的表标签
-  const [allColumns, setAllColumns] = useState<Map<string, ColumnInfo[]>>(new Map())
-  const [showModal, setShowModal] = useState(false)
+  const [showConnectionModal, setShowConnectionModal] = useState(false)
   const [editingConnection, setEditingConnection] = useState<Connection | null>(null)
-  const [defaultDbType, setDefaultDbType] = useState<DatabaseType | undefined>(undefined)
-  const [tabs, setTabs] = useState<Tab[]>([])
-  const [activeTab, setActiveTab] = useState<string>('welcome')
-  const [status, setStatus] = useState({ text: '就绪', type: 'success' as 'success' | 'error' | 'warning' | 'info' })
-  
-  // 数据库/表管理相关状态
+  const [newConnectionType, setNewConnectionType] = useState<DatabaseType | undefined>()
   const [showCreateDbModal, setShowCreateDbModal] = useState(false)
   const [createDbConnectionId, setCreateDbConnectionId] = useState<string | null>(null)
   const [showCreateTableModal, setShowCreateTableModal] = useState(false)
-  const [createTableInfo, setCreateTableInfo] = useState<{ connectionId: string; database: string } | null>(null)
-  const [showRenameDialog, setShowRenameDialog] = useState(false)
-  const [renameInfo, setRenameInfo] = useState<{ connectionId: string; database: string; table: string } | null>(null)
-  const [showDuplicateDialog, setShowDuplicateDialog] = useState(false)
-  const [duplicateInfo, setDuplicateInfo] = useState<{ connectionId: string; database: string; table: string } | null>(null)
-  
-  // 表设计器状态
-  const [showTableDesigner, setShowTableDesigner] = useState(false)
-  const [tableDesignerInfo, setTableDesignerInfo] = useState<{
-    mode: 'create' | 'edit'
-    connectionId: string
-    database: string
-    tableName?: string
+  const [createTableContext, setCreateTableContext] = useState<{ connectionId: string; database: string } | null>(null)
+  const [inputDialog, setInputDialog] = useState<{
+    isOpen: boolean
+    title: string
+    label: string
+    defaultValue: string
+    onConfirm: (value: string) => void
+  } | null>(null)
+  const [notification, setNotification] = useState<{
+    type: 'success' | 'error' | 'info'
+    message: string
   } | null>(null)
 
-  useEffect(() => {
-    api.loadConnections().then(data => {
-      if (data) setConnections(data)
-    })
+  // 显示通知
+  const showNotification = useCallback((type: 'success' | 'error' | 'info', message: string) => {
+    setNotification({ type, message })
+    setTimeout(() => setNotification(null), 3000)
   }, [])
 
-  // 防抖保存连接配置
-  const debouncedSaveConnections = useDebouncedCallback((conns: Connection[]) => {
-    api.saveConnections(conns)
-  }, 500)
+  // 连接管理
+  const {
+    connections, setConnections,
+    connectedIds, setConnectedIds,
+    addConnection, deleteConnection, updateConnection
+  } = useConnections()
 
-  useEffect(() => {
-    if (connections.length > 0) {
-      debouncedSaveConnections(connections)
-    }
-  }, [connections, debouncedSaveConnections])
+  // 数据库操作
+  const {
+    databasesMap, setDatabasesMap,
+    loadingDbSet, setLoadingDbSet,
+    fetchDatabases
+  } = useDatabaseOperations(showNotification)
 
-  // 全局快捷键
-  useEffect(() => {
-    const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      // Ctrl+Q 新建查询
-      if ((e.ctrlKey || e.metaKey) && e.key === 'q') {
-        e.preventDefault()
-        const id = `query-${Date.now()}`
-        const newTab: QueryTab = { id, title: '查询', sql: '', results: null }
-        setTabs(prev => [...prev, newTab])
-        setActiveTab(id)
-      }
-    }
-    
-    window.addEventListener('keydown', handleGlobalKeyDown)
-    return () => window.removeEventListener('keydown', handleGlobalKeyDown)
-  }, [])
+  // 表操作
+  const {
+    tablesMap, setTablesMap,
+    columnsMap, setColumnsMap,
+    fetchTables, fetchColumns
+  } = useTableOperations(showNotification)
 
-  const handleSaveConnection = (conn: Connection) => {
-    if (editingConnection) {
-      setConnections(prev => prev.map(c => c.id === conn.id ? conn : c))
-    } else {
-      setConnections(prev => [...prev, conn])
-    }
-    setShowModal(false)
-  }
+  // Tab操作
+  const {
+    tabs, setTabs,
+    activeTab, setActiveTab,
+    loadingTables, setLoadingTables
+  } = useTabOperations()
 
-  const handleConnect = async (conn: Connection) => {
-    setStatus({ text: `正在连接 ${conn.name}...`, type: 'info' })
-    
-    const result = await api.connect(conn)
-    
-    if (result?.success) {
+  // 查询操作
+  const { runQuery } = useQueryOperations(tabs, setTabs, showNotification)
+
+  // 导入导出
+  const { importConnections: doImportConnections, exportConnections: doExportConnections } = useImportExport(connections, setConnections, showNotification)
+
+  // 连接数据库
+  const handleConnect = useCallback(async (conn: Connection) => {
+    if (connectedIds.has(conn.id)) return
+    try {
+      await api.connect(conn)
       setConnectedIds(prev => new Set(prev).add(conn.id))
       setActiveConnection(conn.id)
-      setStatus({ text: `已连接: ${conn.name}`, type: 'success' })
-      
-      const dbs = await api.getDatabases(conn.id)
-      // 存储该连接的数据库列表
-      setDatabasesMap(prev => new Map(prev).set(conn.id, dbs || []))
-    } else {
-      setStatus({ text: result?.message || '连接失败', type: 'error' })
+      await fetchDatabases(conn.id)
+      showNotification('success', `已连接到 ${conn.name}`)
+    } catch (err) {
+      showNotification('error', '连接失败：' + (err as Error).message)
     }
-  }
+  }, [connectedIds, setConnectedIds, fetchDatabases, showNotification])
 
-  const handleDisconnect = async (id: string) => {
-    await api.disconnect(id)
-    setConnectedIds(prev => {
-      const next = new Set(prev)
-      next.delete(id)
-      return next
-    })
-    // 清理该连接的数据
-    setDatabasesMap(prev => {
-      const next = new Map(prev)
-      next.delete(id)
-      return next
-    })
-    // 清理该连接相关的表数据
-    setTablesMap(prev => {
-      const next = new Map(prev)
-      for (const key of next.keys()) {
-        if (key.startsWith(`${id}:`)) {
-          next.delete(key)
-        }
-      }
-      return next
-    })
-    if (activeConnection === id) {
-      setActiveConnection(null)
-      setSelectedDatabase(null)
-    }
-  }
-
-  // 切换选中的连接，如果已连接且尚未加载数据库列表则加载
-  const handleSelectConnection = async (id: string) => {
-    setActiveConnection(id)
-    
-    // 如果该连接已经连接，且尚未加载过数据库列表
-    if (connectedIds.has(id) && !databasesMap.has(id)) {
-      setStatus({ text: '正在加载数据库列表...', type: 'info' })
-      
-      try {
-        const dbs = await api.getDatabases(id)
-        setDatabasesMap(prev => new Map(prev).set(id, dbs || []))
-        setStatus({ text: `${dbs?.length || 0} 个数据库`, type: 'success' })
-      } catch (err: any) {
-        setStatus({ text: err.message, type: 'error' })
-      }
-    }
-  }
-
-  const handleSelectDatabase = useCallback(async (db: string, connectionId: string) => {
-    // 如果已经加载过该数据库的表，只更新选中状态
-    if (tablesMap.has(db)) {
-      setSelectedDatabase(db)
-      return
-    }
-    
-    setSelectedDatabase(db)
-    // 标记该数据库正在加载
-    setLoadingDbSet(prev => new Set(prev).add(db))
-    setStatus({ text: `正在加载 ${db} 的表...`, type: 'info' })
-    
+  // 断开连接
+  const handleDisconnect = useCallback(async (id: string) => {
     try {
-      const tableList = await api.getTables(connectionId, db)
-      // 更新该数据库的表列表（不影响其他数据库）
-      setTablesMap(prev => {
-        const next = new Map(prev)
-        next.set(db, tableList || [])
-        return next
-      })
-      setLoadingDbSet(prev => {
-        const next = new Set(prev)
-        next.delete(db)
-        return next
-      })
-      
-      // 获取所有表的字段信息用于代码提示 - 并行加载以提高性能
-      if (tableList && tableList.length > 0) {
-        const columnsPromises = tableList.map(async (table) => {
-          const cols = await api.getColumns(connectionId, db, table.name)
-          return { name: table.name, cols: cols || [] }
-        })
-        
-        const columnsResults = await Promise.all(columnsPromises)
-        setAllColumns(prev => {
-          const next = new Map(prev)
-          columnsResults.forEach(({ name, cols }) => {
-            if (cols.length > 0) next.set(name, cols)
-          })
-          return next
-        })
-      }
-      
-      setStatus({ text: `${db}: ${tableList?.length || 0} 个表`, type: 'success' })
-    } catch (err: any) {
-      setLoadingDbSet(prev => {
-        const next = new Set(prev)
-        next.delete(db)
-        return next
-      })
-      setStatus({ text: err.message, type: 'error' })
-    }
-  }, [tablesMap])
-
-  const handleNewQuery = (name?: string) => {
-    const id = `query-${Date.now()}`
-    const newTab: QueryTab = { id, title: name || '查询', sql: '', results: null }
-    setTabs(prev => [...prev, newTab])
-    setActiveTab(id)
-  }
-
-  const handleOpenTable = async (connectionId: string, database: string, tableName: string) => {
-    // 检查是否已经打开了这个表（同一连接、同一数据库、同一表）
-    const existingTab = tabs.find(t => 
-      'tableName' in t && 
-      t.tableName === tableName && 
-      t.database === database &&
-      t.connectionId === connectionId
-    )
-    if (existingTab) {
-      setActiveTab(existingTab.id)
-      return
-    }
-    
-    // 先创建空标签页并显示 loading
-    const id = `table-${Date.now()}`
-    const emptyTab: TableTab = {
-      id,
-      type: 'table',
-      tableName,
-      database,
-      connectionId,
-      columns: [],
-      data: [],
-      total: 0,
-      page: 1,
-      pageSize: 1000,
-      originalData: [],
-      pendingChanges: new Map(),
-      deletedRows: new Set()
-    }
-    
-    setTabs(prev => [...prev, emptyTab])
-    setActiveTab(id)
-    setLoadingTables(prev => new Set(prev).add(id))
-    setStatus({ text: `正在加载 ${tableName}...`, type: 'info' })
-    
-    try {
-      // 使用传入的 connectionId 而不是 activeConnection，默认1000条
-      const result = await api.getTableData(connectionId, database, tableName, 1, 1000)
-      // 使用返回的 columns，确保列顺序和数据一致
-      const columns = result?.columns || []
-      
-      // 更新标签页数据
-      setTabs(prev => prev.map(t => 
-        t.id === id 
-          ? {
-              ...t,
-              columns,
-              data: result?.data || [],
-              total: result?.total || 0,
-              originalData: result?.data || [],
-            }
-          : t
-      ))
-      setStatus({ text: `${tableName}: ${result?.total || 0} 行`, type: 'success' })
-    } catch (err: any) {
-      setStatus({ text: err.message, type: 'error' })
-      // 加载失败时关闭标签页
-      setTabs(prev => prev.filter(t => t.id !== id))
-      setActiveTab('welcome')
-    } finally {
-      setLoadingTables(prev => {
+      await api.disconnect(id)
+      setConnectedIds(prev => {
         const next = new Set(prev)
         next.delete(id)
         return next
       })
+      setDatabasesMap(prev => {
+        const next = new Map(prev)
+        next.delete(id)
+        return next
+      })
+      if (activeConnection === id) setActiveConnection(null)
+      showNotification('info', '连接已断开')
+    } catch (err) {
+      showNotification('error', '断开失败：' + (err as Error).message)
     }
-  }
+  }, [activeConnection, setConnectedIds, setDatabasesMap, showNotification])
 
-  const handleLoadTablePage = async (tabId: string, page: number) => {
-    const tab = tabs.find(t => t.id === tabId) as TableTab | undefined
-    if (!tab || !('tableName' in tab)) return
-    
-    // 设置加载状态
-    setLoadingTables(prev => new Set(prev).add(tabId))
-    setStatus({ text: `加载第 ${page} 页...`, type: 'info' })
-    
+  // 选择数据库
+  const handleSelectDatabase = useCallback(async (db: string, connectionId: string) => {
+    setSelectedDatabase(db)
+    setActiveConnection(connectionId)
+    setLoadingDbSet(prev => new Set(prev).add(db))
     try {
-      const result = await api.getTableData(
-        tab.connectionId, tab.database, tab.tableName, page, tab.pageSize
-      )
-      
-      setTabs(prev => prev.map(t => 
-        t.id === tabId && 'tableName' in t 
-          ? { ...t, data: result?.data || [], page, originalData: result?.data || [], pendingChanges: new Map(), deletedRows: new Set() } 
-          : t
-      ))
-      setStatus({ text: `${tab.tableName}: 第 ${page} 页`, type: 'success' })
-    } catch (err: any) {
-      setStatus({ text: err.message, type: 'error' })
+      await fetchTables(connectionId, db)
+      const tables = tablesMap.get(db) || []
+      await Promise.all(tables.map(t => fetchColumns(connectionId, db, t.name)))
     } finally {
-      setLoadingTables(prev => {
+      setLoadingDbSet(prev => {
         const next = new Set(prev)
-        next.delete(tabId)
+        next.delete(db)
         return next
       })
     }
-  }
+  }, [fetchTables, fetchColumns, tablesMap, setLoadingDbSet])
 
-  // 修改每页显示条数
-  const handleChangeTablePageSize = async (tabId: string, pageSize: number) => {
-    const tab = tabs.find(t => t.id === tabId) as TableTab | undefined
-    if (!tab || !('tableName' in tab)) return
-    
-    // 设置加载状态
-    setLoadingTables(prev => new Set(prev).add(tabId))
-    setStatus({ text: `切换为每页 ${pageSize} 条...`, type: 'info' })
-    
-    try {
-      // 重新从第1页加载
-      const result = await api.getTableData(
-        tab.connectionId, tab.database, tab.tableName, 1, pageSize
-      )
-      
-      setTabs(prev => prev.map(t => 
-        t.id === tabId && 'tableName' in t 
-          ? { ...t, data: result?.data || [], page: 1, pageSize, originalData: result?.data || [], pendingChanges: new Map(), deletedRows: new Set() } 
-          : t
-      ))
-      setStatus({ text: `${tab.tableName}: 每页 ${pageSize} 条`, type: 'success' })
-    } catch (err: any) {
-      setStatus({ text: err.message, type: 'error' })
-    } finally {
-      setLoadingTables(prev => {
-        const next = new Set(prev)
-        next.delete(tabId)
-        return next
-      })
-    }
-  }
-
-  // 更新表格单元格
-  const handleUpdateTableCell = (tabId: string, rowIndex: number, colName: string, value: any) => {
-    setTabs(prev => prev.map(t => {
-      if (t.id !== tabId || !('tableName' in t)) return t
-      const tab = t as TableTab
-      
-      // 更新数据
-      const newData = [...tab.data]
-      newData[rowIndex] = { ...newData[rowIndex], [colName]: value }
-      
-      // 记录修改
-      const pendingChanges = new Map(tab.pendingChanges || new Map())
-      const rowChanges = pendingChanges.get(String(rowIndex)) || {}
-      rowChanges[colName] = value
-      pendingChanges.set(String(rowIndex), rowChanges)
-      
-      return { ...tab, data: newData, pendingChanges }
-    }))
-  }
-
-  // 删除表格行
-  const handleDeleteTableRow = (tabId: string, rowIndex: number) => {
-    setTabs(prev => prev.map(t => {
-      if (t.id !== tabId || !('tableName' in t)) return t
-      const tab = t as TableTab
-      
-      const deletedRows = new Set(tab.deletedRows || new Set())
-      deletedRows.add(rowIndex)
-      
-      return { ...tab, deletedRows }
-    }))
-  }
-
-  // 批量删除表格行
-  const handleDeleteTableRows = (tabId: string, rowIndices: number[]) => {
-    setTabs(prev => prev.map(t => {
-      if (t.id !== tabId || !('tableName' in t)) return t
-      const tab = t as TableTab
-      
-      const deletedRows = new Set(tab.deletedRows || new Set())
-      rowIndices.forEach(idx => deletedRows.add(idx))
-      
-      return { ...tab, deletedRows }
-    }))
-  }
-
-  // 保存表格修改
-  const handleSaveTableChanges = async (tabId: string) => {
-    const tab = tabs.find(t => t.id === tabId) as TableTab | undefined
-    if (!tab || !('tableName' in tab)) return
-    
-    const primaryKeyCol = tab.columns.find(c => c.key === 'PRI')?.name || tab.columns[0]?.name
-    if (!primaryKeyCol) {
-      setStatus({ text: '无法确定主键列', type: 'error' })
+  // 打开表
+  const handleOpenTable = useCallback(async (connectionId: string, database: string, tableName: string) => {
+    const existingTab = tabs.find(t => 'tableName' in t && t.tableName === tableName && t.database === database)
+    if (existingTab) {
+      setActiveTab(existingTab.id)
       return
     }
-    
-    setStatus({ text: '保存中...', type: 'info' })
+
+    const newTabId = `table-${Date.now()}`
+    setLoadingTables(prev => new Set(prev).add(newTabId))
     
     try {
-      // 保存修改的行
-      if (tab.pendingChanges) {
-        for (const [rowIndexStr, changes] of tab.pendingChanges) {
-          const rowIndex = parseInt(rowIndexStr)
-          const originalRow = tab.originalData?.[rowIndex] || tab.data[rowIndex]
-          const primaryKeyValue = originalRow[primaryKeyCol]
-          
-          const result = await api.updateRow(
-            tab.connectionId,
-            tab.database,
-            tab.tableName,
-            { column: primaryKeyCol, value: primaryKeyValue },
-            changes
-          )
-          
-          if (result?.error) {
-            setStatus({ text: `保存失败: ${result.error}`, type: 'error' })
-            return
-          }
-        }
-      }
+      const cols = await api.getTableColumns(connectionId, database, tableName)
+      const pageSize = 100
+      const { rows, total } = await api.getTableData(connectionId, database, tableName, 1, pageSize)
       
-      // 删除行
-      if (tab.deletedRows) {
-        for (const rowIndex of tab.deletedRows) {
-          const originalRow = tab.originalData?.[rowIndex] || tab.data[rowIndex]
-          const primaryKeyValue = originalRow[primaryKeyCol]
-          
-          const result = await api.deleteRow(
-            tab.connectionId,
-            tab.database,
-            tab.tableName,
-            { column: primaryKeyCol, value: primaryKeyValue }
-          )
-          
-          if (result?.error) {
-            setStatus({ text: `删除失败: ${result.error}`, type: 'error' })
-            return
-          }
-        }
-      }
-      
-      // 插入新增行
-      if (tab.newRows && tab.newRows.length > 0) {
-        for (const newRow of tab.newRows) {
-          // 过滤掉所有值为null的列（只保留有值的列）
-          const columns: string[] = []
-          const values: any[] = []
-          
-          for (const [colName, value] of Object.entries(newRow)) {
-            if (value !== null && value !== undefined && value !== '') {
-              columns.push(colName)
-              values.push(value)
-            }
-          }
-          
-          // 如果所有列都是空的，跳过这行
-          if (columns.length === 0) {
-            continue
-          }
-          
-          const result = await api.insertRow(
-            tab.connectionId,
-            tab.database,
-            tab.tableName,
-            columns,
-            values
-          )
-          
-          if (result?.error) {
-            setStatus({ text: `插入失败: ${result.error}`, type: 'error' })
-            return
-          }
-        }
-      }
-      
-      // 重新加载数据
-      const result = await api.getTableData(
-        tab.connectionId, tab.database, tab.tableName, tab.page, tab.pageSize
-      )
-      const totalResult = await api.getTableData(
-        tab.connectionId, tab.database, tab.tableName, 1, 1
-      )
-      
-      setTabs(prev => prev.map(t => 
-        t.id === tabId && 'tableName' in t 
-          ? { 
-              ...t, 
-              data: result?.data || [], 
-              total: totalResult?.total || tab.total,
-              originalData: result?.data || [],
-              pendingChanges: new Map(), 
-              deletedRows: new Set(),
-              newRows: [] 
-            } 
-          : t
-      ))
-      
-      setStatus({ text: '保存成功', type: 'success' })
-    } catch (err: any) {
-      setStatus({ text: `保存失败: ${err.message}`, type: 'error' })
-    }
-  }
-
-  // 放弃修改
-  const handleDiscardTableChanges = (tabId: string) => {
-    setTabs(prev => prev.map(t => {
-      if (t.id !== tabId || !('tableName' in t)) return t
-      const tab = t as TableTab
-      
-      return { 
-        ...tab, 
-        data: tab.originalData || tab.data,
-        pendingChanges: new Map(), 
+      const newTab: TableTab = {
+        id: newTabId,
+        tableName,
+        database,
+        connectionId,
+        columns: cols,
+        data: rows,
+        total,
+        page: 1,
+        pageSize,
+        pendingChanges: new Map(),
         deletedRows: new Set(),
-        newRows: [] 
+        newRows: []
       }
-    }))
-    setStatus({ text: '已放弃修改', type: 'warning' })
-  }
-
-  // 新增表格行
-  const handleAddTableRow = (tabId: string) => {
-    setTabs(prev => prev.map(t => {
-      if (t.id !== tabId || !('tableName' in t)) return t
-      const tab = t as TableTab
-      
-      // 创建一个空行，所有列的值设为null
-      const newRow: Record<string, any> = {}
-      tab.columns.forEach(col => {
-        newRow[col.name] = null
+      setTabs(prev => [...prev, newTab])
+      setActiveTab(newTabId)
+    } catch (err) {
+      showNotification('error', '打开表失败：' + (err as Error).message)
+    } finally {
+      setLoadingTables(prev => {
+        const next = new Set(prev)
+        next.delete(newTabId)
+        return next
       })
-      
-      const newRows = [...(tab.newRows || []), newRow]
-      
-      return { ...tab, newRows }
-    }))
-    setStatus({ text: '已添加新行', type: 'info' })
-  }
+    }
+  }, [tabs, setTabs, setActiveTab, setLoadingTables, showNotification])
 
-  // 更新新增行的数据
-  const handleUpdateNewRow = (tabId: string, rowIndex: number, colName: string, value: any) => {
+  // 加载表页
+  const handleLoadTablePage = useCallback(async (tabId: string, page: number) => {
+    const tab = tabs.find(t => t.id === tabId)
+    if (!tab || !('tableName' in tab)) return
+
+    setLoadingTables(prev => new Set(prev).add(tabId))
+    try {
+      const { rows, total } = await api.getTableData(tab.connectionId, tab.database, tab.tableName, page, tab.pageSize)
+      setTabs(prev => prev.map(t => t.id === tabId ? { ...t, data: rows, total, page, pendingChanges: new Map(), deletedRows: new Set(), newRows: [] } : t))
+    } catch (err) {
+      showNotification('error', '加载数据失败')
+    } finally {
+      setLoadingTables(prev => {
+        const next = new Set(prev)
+        next.delete(tabId)
+        return next
+      })
+    }
+  }, [tabs, setTabs, setLoadingTables, showNotification])
+
+  // 更新表单元格
+  const handleUpdateTableCell = useCallback((tabId: string, rowIndex: number, colName: string, value: any) => {
     setTabs(prev => prev.map(t => {
       if (t.id !== tabId || !('tableName' in t)) return t
-      const tab = t as TableTab
-      
+      const tab = t as TableTab & { pendingChanges: Map<string, any> }
+      const changes = new Map(tab.pendingChanges)
+      const rowKey = String(rowIndex)
+      const rowChanges = changes.get(rowKey) || {}
+      rowChanges[colName] = value
+      changes.set(rowKey, rowChanges)
+      return { ...t, pendingChanges: changes }
+    }))
+  }, [setTabs])
+
+  // 删除行
+  const handleDeleteTableRow = useCallback((tabId: string, rowIndex: number) => {
+    setTabs(prev => prev.map(t => {
+      if (t.id !== tabId || !('tableName' in t)) return t
+      const tab = t as TableTab & { deletedRows: Set<number> }
+      const deleted = new Set(tab.deletedRows)
+      deleted.add(rowIndex)
+      return { ...t, deletedRows: deleted }
+    }))
+  }, [setTabs])
+
+  // 批量删除行
+  const handleDeleteTableRows = useCallback((tabId: string, rowIndices: number[]) => {
+    setTabs(prev => prev.map(t => {
+      if (t.id !== tabId || !('tableName' in t)) return t
+      const tab = t as TableTab & { deletedRows: Set<number> }
+      const deleted = new Set(tab.deletedRows)
+      rowIndices.forEach(i => deleted.add(i))
+      return { ...t, deletedRows: deleted }
+    }))
+  }, [setTabs])
+
+  // 保存更改
+  const handleSaveTableChanges = useCallback(async (tabId: string) => {
+    const tab = tabs.find(t => t.id === tabId) as (TableTab & { pendingChanges: Map<string, any>; deletedRows: Set<number>; newRows: any[] }) | undefined
+    if (!tab || !('tableName' in tab)) return
+
+    const primaryKeyCol = tab.columns.find(c => c.key === 'PRI')?.name || tab.columns[0]?.name
+    if (!primaryKeyCol) {
+      showNotification('error', '无法确定主键')
+      return
+    }
+
+    setLoadingTables(prev => new Set(prev).add(tabId))
+    try {
+      // 处理更新
+      for (const [rowKey, changes] of tab.pendingChanges) {
+        const rowIndex = parseInt(rowKey)
+        const row = tab.data[rowIndex]
+        if (!row) continue
+        const pkValue = row[primaryKeyCol]
+        await api.updateTableRow(tab.connectionId, tab.database, tab.tableName, primaryKeyCol, pkValue, changes)
+      }
+
+      // 处理删除
+      for (const rowIndex of tab.deletedRows) {
+        const row = tab.data[rowIndex]
+        if (!row) continue
+        const pkValue = row[primaryKeyCol]
+        await api.deleteTableRow(tab.connectionId, tab.database, tab.tableName, primaryKeyCol, pkValue)
+      }
+
+      // 处理新增
+      for (const newRow of tab.newRows || []) {
+        const insertData: Record<string, any> = {}
+        tab.columns.forEach(col => {
+          if (newRow[col.name] !== undefined && newRow[col.name] !== null && newRow[col.name] !== '') {
+            insertData[col.name] = newRow[col.name]
+          }
+        })
+        if (Object.keys(insertData).length > 0) {
+          await api.insertTableRow(tab.connectionId, tab.database, tab.tableName, insertData)
+        }
+      }
+
+      showNotification('success', '保存成功')
+      await handleLoadTablePage(tabId, tab.page)
+    } catch (err) {
+      showNotification('error', '保存失败：' + (err as Error).message)
+    } finally {
+      setLoadingTables(prev => {
+        const next = new Set(prev)
+        next.delete(tabId)
+        return next
+      })
+    }
+  }, [tabs, handleLoadTablePage, setLoadingTables, showNotification])
+
+  // 丢弃更改
+  const handleDiscardTableChanges = useCallback((tabId: string) => {
+    setTabs(prev => prev.map(t => t.id === tabId ? { ...t, pendingChanges: new Map(), deletedRows: new Set(), newRows: [] } : t))
+  }, [setTabs])
+
+  // 刷新表
+  const handleRefreshTable = useCallback(async (tabId: string) => {
+    const tab = tabs.find(t => t.id === tabId)
+    if (!tab || !('tableName' in tab)) return
+    await handleLoadTablePage(tabId, (tab as TableTab).page)
+  }, [tabs, handleLoadTablePage])
+
+  // 添加新行
+  const handleAddTableRow = useCallback((tabId: string) => {
+    setTabs(prev => prev.map(t => {
+      if (t.id !== tabId || !('tableName' in t)) return t
+      const tab = t as TableTab & { newRows: any[] }
+      const newRow: Record<string, any> = {}
+      tab.columns.forEach(col => { newRow[col.name] = null })
+      return { ...t, newRows: [...(tab.newRows || []), newRow] }
+    }))
+  }, [setTabs])
+
+  // 更新新行
+  const handleUpdateNewRow = useCallback((tabId: string, rowIndex: number, colName: string, value: any) => {
+    setTabs(prev => prev.map(t => {
+      if (t.id !== tabId || !('tableName' in t)) return t
+      const tab = t as TableTab & { newRows: any[] }
       const newRows = [...(tab.newRows || [])]
       if (newRows[rowIndex]) {
         newRows[rowIndex] = { ...newRows[rowIndex], [colName]: value }
       }
-      
-      return { ...tab, newRows }
+      return { ...t, newRows }
     }))
-  }
+  }, [setTabs])
 
-  // 删除新增行
-  const handleDeleteNewRow = (tabId: string, rowIndex: number) => {
+  // 删除新行
+  const handleDeleteNewRow = useCallback((tabId: string, rowIndex: number) => {
     setTabs(prev => prev.map(t => {
       if (t.id !== tabId || !('tableName' in t)) return t
-      const tab = t as TableTab
-      
+      const tab = t as TableTab & { newRows: any[] }
       const newRows = [...(tab.newRows || [])]
       newRows.splice(rowIndex, 1)
-      
-      return { ...tab, newRows }
+      return { ...t, newRows }
     }))
-    setStatus({ text: '已删除新增行', type: 'info' })
-  }
+  }, [setTabs])
 
-  // 刷新表数据
-  const handleRefreshTable = async (tabId: string) => {
-    const tab = tabs.find(t => t.id === tabId) as TableTab | undefined
-    if (!tab || !('tableName' in tab)) return
-    
-    // 设置加载状态
-    setLoadingTables(prev => new Set(prev).add(tabId))
-    setStatus({ text: `刷新 ${tab.tableName}...`, type: 'info' })
-    
-    try {
-      const result = await api.getTableData(
-        tab.connectionId, tab.database, tab.tableName, tab.page, tab.pageSize
-      )
-      const totalResult = await api.getTableData(
-        tab.connectionId, tab.database, tab.tableName, 1, 1
-      )
-      
-      setTabs(prev => prev.map(t => 
-        t.id === tabId && 'tableName' in t 
-          ? { 
-              ...t, 
-              data: result?.data || [], 
-              total: totalResult?.total || tab.total,
-              originalData: result?.data || [], 
-              pendingChanges: new Map(), 
-              deletedRows: new Set(),
-              newRows: []  // 刷新时清空新增行
-            } 
-          : t
-      ))
-      setStatus({ text: `${tab.tableName}: ${totalResult?.total || 0} 行`, type: 'success' })
-    } catch (err: any) {
-      setStatus({ text: err.message, type: 'error' })
-    } finally {
-      setLoadingTables(prev => {
-        const next = new Set(prev)
-        next.delete(tabId)
-        return next
-      })
-    }
-  }
+  // 新建查询
+  const handleNewQuery = useCallback(() => {
+    const newTab: QueryTab = { id: `query-${Date.now()}`, title: `查询 ${tabs.filter(t => !('tableName' in t)).length + 1}`, sql: '', results: null }
+    setTabs(prev => [...prev, newTab])
+    setActiveTab(newTab.id)
+  }, [tabs, setTabs, setActiveTab])
 
-  // 使用防抖防止快速重复点击
-  const handleRunQuery = useDebouncedCallback(async (tabId: string, sql: string) => {
+  // 执行查询
+  const handleRunQuery = useCallback(async (tabId: string, sql: string) => {
     if (!activeConnection) {
-      setStatus({ text: '请先连接数据库', type: 'warning' })
+      showNotification('error', '请先连接数据库')
       return
     }
+    await runQuery(tabId, activeConnection, sql)
+  }, [activeConnection, runQuery, showNotification])
 
-    setStatus({ text: '执行中...', type: 'info' })
-    const start = Date.now()
-    
-    const result = await api.query(activeConnection, sql)
-    const elapsed = ((Date.now() - start) / 1000).toFixed(2)
-    
-    if (result?.error) {
-      setStatus({ text: result.error, type: 'error' })
+  // 更新SQL
+  const handleUpdateSql = useCallback((tabId: string, sql: string) => {
+    setTabs(prev => prev.map(t => t.id === tabId ? { ...t, sql } : t))
+  }, [setTabs])
+
+  // 更新Tab标题
+  const handleUpdateTabTitle = useCallback((tabId: string, title: string) => {
+    setTabs(prev => prev.map(t => t.id === tabId ? { ...t, title } : t))
+  }, [setTabs])
+
+  // 关闭Tab
+  const handleCloseTab = useCallback((tabId: string) => {
+    setTabs(prev => {
+      const filtered = prev.filter(t => t.id !== tabId)
+      if (activeTab === tabId) {
+        setActiveTab(filtered.length > 0 ? filtered[filtered.length - 1].id : 'welcome')
+      }
+      return filtered
+    })
+  }, [activeTab, setTabs, setActiveTab])
+
+  // 切换Tab
+  const handleTabChange = useCallback((tabId: string) => {
+    setActiveTab(tabId)
+  }, [setActiveTab])
+
+  // 更改每页大小
+  const handleChangeTablePageSize = useCallback(async (tabId: string, pageSize: number) => {
+    setTabs(prev => prev.map(t => t.id === tabId ? { ...t, pageSize } : t))
+    await handleLoadTablePage(tabId, 1)
+  }, [setTabs, handleLoadTablePage])
+
+  // 带类型新建连接
+  const handleNewConnectionWithType = useCallback((type: DatabaseType) => {
+    setNewConnectionType(type)
+    setEditingConnection(null)
+    setShowConnectionModal(true)
+  }, [])
+
+  // 保存连接
+  const handleSaveConnection = useCallback((conn: Omit<Connection, 'id'> & { id?: string }) => {
+    if (conn.id) {
+      updateConnection(conn as Connection)
     } else {
-      setTabs(prev => prev.map(t => t.id === tabId ? { ...t, results: result, sql } : t))
-      setStatus({ text: `${result?.rows?.length || 0} 行 (${elapsed}s)`, type: 'success' })
+      addConnection(conn)
     }
-  }, 300)
+  }, [addConnection, updateConnection])
 
-  // 数据库备份
-  const handleBackupDatabase = async (database: string) => {
-    if (!activeConnection) {
-      setStatus({ text: '请先连接数据库', type: 'warning' })
-      return
+  // 删除连接
+  const handleDeleteConnection = useCallback(async (id: string) => {
+    if (connectedIds.has(id)) {
+      await handleDisconnect(id)
     }
-    
-    setStatus({ text: `正在备份 ${database}...`, type: 'info' })
-    
-    const result = await api.backupDatabase(activeConnection, database)
-    
-    if (result?.error) {
-      setStatus({ text: `备份失败: ${result.error}`, type: 'error' })
-    } else if (result?.cancelled) {
-      setStatus({ text: '备份已取消', type: 'warning' })
-    } else if (result?.success) {
-      setStatus({ text: `备份成功: ${result.path}`, type: 'success' })
-    }
-  }
+    deleteConnection(id)
+  }, [connectedIds, handleDisconnect, deleteConnection])
 
-  // 导出表
-  const handleExportTable = async (database: string, tableName: string, format: 'excel' | 'sql' | 'csv') => {
-    if (!activeConnection) {
-      setStatus({ text: '请先连接数据库', type: 'warning' })
-      return
+  // 批量删除连接
+  const handleDeleteConnections = useCallback(async (ids: string[]) => {
+    for (const id of ids) {
+      await handleDeleteConnection(id)
     }
-    
-    setStatus({ text: `正在导出 ${tableName}...`, type: 'info' })
-    
-    const result = await api.exportTable(activeConnection, database, tableName, format)
-    
-    if (result?.error) {
-      setStatus({ text: `导出失败: ${result.error}`, type: 'error' })
-    } else if (result?.cancelled) {
-      setStatus({ text: '导出已取消', type: 'warning' })
-    } else if (result?.success) {
-      setStatus({ text: `导出成功: ${result.path}`, type: 'success' })
-    }
-  }
+  }, [handleDeleteConnection])
 
-  // ============ 数据库管理 ============
-  const handleCreateDatabase = (connectionId: string) => {
+  // 编辑连接
+  const handleEditConnection = useCallback((conn: Connection) => {
+    setEditingConnection(conn)
+    setNewConnectionType(undefined)
+    setShowConnectionModal(true)
+  }, [])
+
+  // 创建数据库
+  const handleCreateDatabase = useCallback((connectionId: string) => {
     setCreateDbConnectionId(connectionId)
     setShowCreateDbModal(true)
-  }
+  }, [])
 
-  const handleSubmitCreateDatabase = async (name: string, charset: string, collation: string) => {
-    if (!createDbConnectionId) return
-    
-    setShowCreateDbModal(false)
-    setStatus({ text: `正在创建数据库 ${name}...`, type: 'info' })
-    
-    const result = await api.createDatabase(createDbConnectionId, name, charset, collation)
-    
-    if (result?.success) {
-      setStatus({ text: `数据库 ${name} 创建成功`, type: 'success' })
-      // 刷新数据库列表
-      const dbs = await api.getDatabases(createDbConnectionId)
-      setDatabasesMap(prev => new Map(prev).set(createDbConnectionId!, dbs || []))
-    } else {
-      setStatus({ text: result?.message || '创建失败', type: 'error' })
-    }
-    setCreateDbConnectionId(null)
-  }
-
-  const handleDropDatabase = async (connectionId: string, database: string) => {
-    setStatus({ text: `正在删除数据库 ${database}...`, type: 'info' })
-    
-    const result = await api.dropDatabase(connectionId, database)
-    
-    if (result?.success) {
-      setStatus({ text: `数据库 ${database} 已删除`, type: 'success' })
-      // 刷新数据库列表
-      const dbs = await api.getDatabases(connectionId)
-      setDatabasesMap(prev => new Map(prev).set(connectionId, dbs || []))
-      // 清理该数据库的表数据
-      setTablesMap(prev => {
-        const next = new Map(prev)
-        next.delete(database)
-        return next
-      })
-      if (selectedDatabase === database) {
-        setSelectedDatabase(null)
-      }
-    } else {
-      setStatus({ text: result?.message || '删除失败', type: 'error' })
-    }
-  }
-
-  // ============ 表管理 ============
-  const handleCreateTable = (connectionId: string, database: string) => {
-    // 使用表设计器创建表
-    handleCreateTableWithDesigner(connectionId, database)
-  }
-
-  const handleSubmitCreateTable = async (tableName: string, columns: any[]) => {
-    if (!createTableInfo) return
-    
-    const { connectionId, database } = createTableInfo
-    setShowCreateTableModal(false)
-    setStatus({ text: `正在创建表 ${tableName}...`, type: 'info' })
-    
-    // 转换列定义格式
-    const formattedColumns = columns.map(col => ({
-      name: col.name,
-      type: col.length ? `${col.type}(${col.length})` : col.type,
-      nullable: col.nullable,
-      primaryKey: col.primaryKey,
-      autoIncrement: col.autoIncrement,
-      defaultValue: col.defaultValue,
-      comment: col.comment,
-    }))
-    
-    const result = await api.createTable(connectionId, database, tableName, formattedColumns)
-    
-    if (result?.success) {
-      setStatus({ text: `表 ${tableName} 创建成功`, type: 'success' })
-      // 刷新表列表
-      handleRefreshTables(connectionId, database)
-    } else {
-      setStatus({ text: result?.message || '创建失败', type: 'error' })
-    }
-    setCreateTableInfo(null)
-  }
-
-  const handleDropTable = async (connectionId: string, database: string, table: string) => {
-    setStatus({ text: `正在删除表 ${table}...`, type: 'info' })
-    
-    const result = await api.dropTable(connectionId, database, table)
-    
-    if (result?.success) {
-      setStatus({ text: `表 ${table} 已删除`, type: 'success' })
-      // 刷新表列表
-      handleRefreshTables(connectionId, database)
-      // 关闭相关的表标签页
-      setTabs(prev => prev.filter(t => !('tableName' in t) || t.tableName !== table || t.database !== database))
-    } else {
-      setStatus({ text: result?.message || '删除失败', type: 'error' })
-    }
-  }
-
-  const handleTruncateTable = async (connectionId: string, database: string, table: string) => {
-    setStatus({ text: `正在清空表 ${table}...`, type: 'info' })
-    
-    const result = await api.truncateTable(connectionId, database, table)
-    
-    if (result?.success) {
-      setStatus({ text: `表 ${table} 已清空`, type: 'success' })
-      // 刷新打开的表标签页数据
-      const tableTab = tabs.find(t => 'tableName' in t && t.tableName === table && t.database === database)
-      if (tableTab) {
-        handleRefreshTable(tableTab.id)
-      }
-    } else {
-      setStatus({ text: result?.message || '清空失败', type: 'error' })
-    }
-  }
-
-  const handleRenameTable = (connectionId: string, database: string, table: string) => {
-    setRenameInfo({ connectionId, database, table })
-    setShowRenameDialog(true)
-  }
-
-  const handleSubmitRenameTable = async (newName: string) => {
-    if (!renameInfo) return
-    
-    const { connectionId, database, table } = renameInfo
-    setShowRenameDialog(false)
-    setStatus({ text: `正在重命名表 ${table} -> ${newName}...`, type: 'info' })
-    
-    const result = await api.renameTable(connectionId, database, table, newName)
-    
-    if (result?.success) {
-      setStatus({ text: `表已重命名为 ${newName}`, type: 'success' })
-      // 刷新表列表
-      handleRefreshTables(connectionId, database)
-      // 更新打开的表标签页
-      setTabs(prev => prev.map(t => 
-        ('tableName' in t && t.tableName === table && t.database === database) 
-          ? { ...t, tableName: newName } 
-          : t
-      ))
-    } else {
-      setStatus({ text: result?.message || '重命名失败', type: 'error' })
-    }
-    setRenameInfo(null)
-  }
-
-  const handleDuplicateTable = (connectionId: string, database: string, table: string) => {
-    setDuplicateInfo({ connectionId, database, table })
-    setShowDuplicateDialog(true)
-  }
-
-  const handleSubmitDuplicateTable = async (newName: string, withData: boolean) => {
-    if (!duplicateInfo) return
-    
-    const { connectionId, database, table } = duplicateInfo
-    setShowDuplicateDialog(false)
-    setStatus({ text: `正在复制表 ${table} -> ${newName}...`, type: 'info' })
-    
-    const result = await api.duplicateTable(connectionId, database, table, newName, withData)
-    
-    if (result?.success) {
-      setStatus({ text: `表已复制为 ${newName}`, type: 'success' })
-      // 刷新表列表
-      handleRefreshTables(connectionId, database)
-    } else {
-      setStatus({ text: result?.message || '复制失败', type: 'error' })
-    }
-    setDuplicateInfo(null)
-  }
-
-  const handleRefreshTables = async (connectionId: string, database: string) => {
-    setLoadingDbSet(prev => new Set(prev).add(database))
-    setStatus({ text: `刷新 ${database} 表列表...`, type: 'info' })
-    
+  // 删除数据库
+  const handleDropDatabase = useCallback(async (connectionId: string, database: string) => {
     try {
-      const tableList = await api.getTables(connectionId, database)
-      setTablesMap(prev => {
-        const next = new Map(prev)
-        next.set(database, tableList || [])
-        return next
-      })
-      setStatus({ text: `${database}: ${tableList?.length || 0} 个表`, type: 'success' })
-    } catch (err: any) {
-      setStatus({ text: err.message, type: 'error' })
-    } finally {
-      setLoadingDbSet(prev => {
-        const next = new Set(prev)
-        next.delete(database)
-        return next
-      })
+      await api.dropDatabase(connectionId, database)
+      showNotification('success', `数据库 ${database} 已删除`)
+      await fetchDatabases(connectionId)
+    } catch (err) {
+      showNotification('error', '删除失败：' + (err as Error).message)
     }
-  }
+  }, [fetchDatabases, showNotification])
 
-  // ============ 表设计器 ============
-  const handleDesignTable = (connectionId: string, database: string, tableName: string) => {
-    setTableDesignerInfo({
-      mode: 'edit',
-      connectionId,
-      database,
-      tableName,
+  // 创建表
+  const handleCreateTable = useCallback((connectionId: string, database: string) => {
+    setCreateTableContext({ connectionId, database })
+    setShowCreateTableModal(true)
+  }, [])
+
+  // 删除表
+  const handleDropTable = useCallback(async (connectionId: string, database: string, table: string) => {
+    try {
+      await api.dropTable(connectionId, database, table)
+      showNotification('success', `表 ${table} 已删除`)
+      await fetchTables(connectionId, database)
+    } catch (err) {
+      showNotification('error', '删除失败：' + (err as Error).message)
+    }
+  }, [fetchTables, showNotification])
+
+  // 清空表
+  const handleTruncateTable = useCallback(async (connectionId: string, database: string, table: string) => {
+    try {
+      await api.truncateTable(connectionId, database, table)
+      showNotification('success', `表 ${table} 已清空`)
+    } catch (err) {
+      showNotification('error', '清空失败：' + (err as Error).message)
+    }
+  }, [showNotification])
+
+  // 重命名表
+  const handleRenameTable = useCallback((connectionId: string, database: string, table: string) => {
+    setInputDialog({
+      isOpen: true,
+      title: '重命名表',
+      label: '新表名',
+      defaultValue: table,
+      onConfirm: async (newName: string) => {
+        if (newName && newName !== table) {
+          try {
+            await api.renameTable(connectionId, database, table, newName)
+            showNotification('success', `表已重命名为 ${newName}`)
+            await fetchTables(connectionId, database)
+          } catch (err) {
+            showNotification('error', '重命名失败：' + (err as Error).message)
+          }
+        }
+        setInputDialog(null)
+      }
     })
-    setShowTableDesigner(true)
-  }
+  }, [fetchTables, showNotification])
 
-  const handleCreateTableWithDesigner = (connectionId: string, database: string) => {
-    setTableDesignerInfo({
-      mode: 'create',
-      connectionId,
-      database,
+  // 复制表
+  const handleDuplicateTable = useCallback((connectionId: string, database: string, table: string) => {
+    setInputDialog({
+      isOpen: true,
+      title: '复制表',
+      label: '新表名',
+      defaultValue: `${table}_copy`,
+      onConfirm: async (newName: string) => {
+        if (newName) {
+          try {
+            await api.duplicateTable(connectionId, database, table, newName)
+            showNotification('success', `表已复制为 ${newName}`)
+            await fetchTables(connectionId, database)
+          } catch (err) {
+            showNotification('error', '复制失败：' + (err as Error).message)
+          }
+        }
+        setInputDialog(null)
+      }
     })
-    setShowTableDesigner(true)
-  }
+  }, [fetchTables, showNotification])
 
-  const handleSaveTableDesign = async (sql: string): Promise<{ success: boolean; message: string }> => {
-    if (!tableDesignerInfo) return { success: false, message: '无效的操作' }
-    
-    const { connectionId, database } = tableDesignerInfo
-    setStatus({ text: '正在保存表结构...', type: 'info' })
-    
-    const result = await api.executeMultiSQL(connectionId, sql)
-    
-    if (result?.success) {
-      setStatus({ text: '表结构保存成功', type: 'success' })
-      // 刷新表列表
-      handleRefreshTables(connectionId, database)
-      return { success: true, message: '保存成功' }
-    } else {
-      setStatus({ text: result?.message || '保存失败', type: 'error' })
-      return { success: false, message: result?.message || '保存失败' }
+  // 刷新表列表
+  const handleRefreshTables = useCallback(async (connectionId: string, database: string) => {
+    await fetchTables(connectionId, database)
+    showNotification('success', '已刷新')
+  }, [fetchTables, showNotification])
+
+  // 设计表
+  const handleDesignTable = useCallback(async (connectionId: string, database: string, table: string) => {
+    showNotification('info', '表设计器开发中...')
+  }, [showNotification])
+
+  // 键盘快捷键
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === 'q') {
+        e.preventDefault()
+        handleNewQuery()
+      }
     }
-  }
-
-  const handleGetTableInfo = useCallback(async () => {
-    if (!tableDesignerInfo || tableDesignerInfo.mode !== 'edit' || !tableDesignerInfo.tableName) {
-      return { columns: [], indexes: [], foreignKeys: [], options: {} as any }
-    }
-    const { connectionId, database, tableName } = tableDesignerInfo
-    return await api.getTableInfo(connectionId, database, tableName)
-  }, [tableDesignerInfo])
-
-  const handleGetDatabasesForDesigner = async () => {
-    if (!tableDesignerInfo) return []
-    return await api.getDatabases(tableDesignerInfo.connectionId)
-  }
-
-  const handleGetTablesForDesigner = async (database: string) => {
-    if (!tableDesignerInfo) return []
-    const tables = await api.getTables(tableDesignerInfo.connectionId, database)
-    return tables.map(t => t.name)
-  }
-
-  const handleGetColumnsForDesigner = async (database: string, table: string) => {
-    if (!tableDesignerInfo) return []
-    return await api.getColumnNames(tableDesignerInfo.connectionId, database, table)
-  }
-
-  // 获取当前连接的数据库类型
-  const getConnectionDbType = (connectionId: string): string => {
-    const conn = connections.find(c => c.id === connectionId)
-    return conn?.type || 'mysql'
-  }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [handleNewQuery])
 
   return (
-    <div className="h-screen flex flex-col bg-metro-dark overflow-hidden">
+    <div className="h-screen flex flex-col bg-white overflow-hidden font-sans">
       <TitleBar />
-      
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex min-h-0">
         <Sidebar
           connections={connections}
           activeConnection={activeConnection}
@@ -962,31 +537,17 @@ export default function App() {
           tablesMap={tablesMap}
           selectedDatabase={selectedDatabase}
           loadingDbSet={loadingDbSet}
-          onNewConnection={() => { setEditingConnection(null); setDefaultDbType(undefined); setShowModal(true) }}
-          onSelectConnection={handleSelectConnection}
+          onNewConnection={() => { setEditingConnection(null); setNewConnectionType(undefined); setShowConnectionModal(true) }}
+          onSelectConnection={setActiveConnection}
           onConnect={handleConnect}
           onDisconnect={handleDisconnect}
-          onEditConnection={(c) => { setEditingConnection(c); setShowModal(true) }}
-          onDeleteConnection={(id) => setConnections(prev => prev.filter(c => c.id !== id))}
-          onDeleteConnections={(ids) => {
-            // 先断开所有选中的已连接数据库
-            ids.forEach(id => {
-              if (connectedIds.has(id)) {
-                api.disconnect(id)
-              }
-            })
-            setConnectedIds(prev => {
-              const next = new Set(prev)
-              ids.forEach(id => next.delete(id))
-              return next
-            })
-            setConnections(prev => prev.filter(c => !ids.includes(c.id)))
-            setStatus({ text: `已删除 ${ids.length} 个连接`, type: 'success' })
-          }}
+          onEditConnection={handleEditConnection}
+          onDeleteConnection={handleDeleteConnection}
+          onDeleteConnections={handleDeleteConnections}
           onSelectDatabase={handleSelectDatabase}
           onOpenTable={handleOpenTable}
-          onBackupDatabase={handleBackupDatabase}
-          onExportTable={handleExportTable}
+          onExportConnections={doExportConnections}
+          onImportConnections={doImportConnections}
           onCreateDatabase={handleCreateDatabase}
           onDropDatabase={handleDropDatabase}
           onCreateTable={handleCreateTable}
@@ -996,69 +557,22 @@ export default function App() {
           onDuplicateTable={handleDuplicateTable}
           onRefreshTables={handleRefreshTables}
           onDesignTable={handleDesignTable}
-          onExportConnections={async (format) => {
-            const result = await api.exportConnections(connections, format)
-            if (result?.success) {
-              setStatus({ text: `已导出 ${result.count} 个连接到 ${result.path}`, type: 'success' })
-            } else if (result?.error) {
-              setStatus({ text: result.error, type: 'error' })
-            }
-          }}
-          onImportConnections={async () => {
-            const result = await api.importConnections()
-            if (result?.success && result.connections) {
-              // 合并连接（检查重名）
-              const existingNames = new Set(connections.map(c => c.name))
-              const newConnections = result.connections.map(conn => {
-                let name = conn.name
-                let counter = 1
-                while (existingNames.has(name)) {
-                  name = `${conn.name} (${counter++})`
-                }
-                existingNames.add(name)
-                return { ...conn, name }
-              })
-              setConnections(prev => [...prev, ...newConnections])
-              setStatus({ 
-                text: `已从 ${result.source} 导入 ${result.count} 个连接`, 
-                type: 'success' 
-              })
-            } else if (result?.error) {
-              setStatus({ text: result.error, type: 'error' })
-            }
-          }}
         />
-        
         <MainContent
           tabs={tabs}
           activeTab={activeTab}
-          databases={activeConnection ? (databasesMap.get(activeConnection) || []) : []}
-          tables={selectedDatabase ? (tablesMap.get(selectedDatabase) || []) : []}
-          columns={allColumns}
-          onTabChange={setActiveTab}
-          onCloseTab={(id) => {
-            setTabs(prev => {
-              const remaining = prev.filter(t => t.id !== id)
-              // 如果关闭的是当前标签页，跳转到最近的标签页
-              if (activeTab === id) {
-                const closedIndex = prev.findIndex(t => t.id === id)
-                if (remaining.length > 0) {
-                  // 优先跳转到右边的标签页，如果没有则跳转到左边的
-                  const nextIndex = Math.min(closedIndex, remaining.length - 1)
-                  setActiveTab(remaining[nextIndex].id)
-                } else {
-                  setActiveTab('welcome')
-                }
-              }
-              return remaining
-            })
-          }}
-          onNewQuery={() => handleNewQuery()}
+          databases={databasesMap.get(activeConnection || '') || []}
+          tables={tablesMap.get(selectedDatabase || '') || []}
+          columns={columnsMap}
+          onTabChange={handleTabChange}
+          onCloseTab={handleCloseTab}
+          onNewQuery={handleNewQuery}
           onRunQuery={handleRunQuery}
-          onUpdateSql={(id, sql) => setTabs(prev => prev.map(t => t.id === id && !('tableName' in t) ? { ...t, sql } : t))}
-          onUpdateTabTitle={(id, title) => setTabs(prev => prev.map(t => t.id === id && !('tableName' in t) ? { ...t, title } : t))}
+          onUpdateSql={handleUpdateSql}
+          onUpdateTabTitle={handleUpdateTabTitle}
           onLoadTablePage={handleLoadTablePage}
           onChangeTablePageSize={handleChangeTablePageSize}
+          onNewConnectionWithType={handleNewConnectionWithType}
           onUpdateTableCell={handleUpdateTableCell}
           onDeleteTableRow={handleDeleteTableRow}
           onDeleteTableRows={handleDeleteTableRows}
@@ -1069,96 +583,69 @@ export default function App() {
           onUpdateNewRow={handleUpdateNewRow}
           onDeleteNewRow={handleDeleteNewRow}
           loadingTables={loadingTables}
-          onNewConnectionWithType={(type) => {
-            setEditingConnection(null)
-            setDefaultDbType(type)
-            setShowModal(true)
-          }}
         />
-      </div>
-      
-      {/* Metro 风格状态栏 */}
-      <div className="h-6 bg-metro-bg flex items-center px-3 text-xs border-t border-metro-border">
-        <div className={`flex items-center gap-2 ${
-          status.type === 'success' ? 'text-accent-green' :
-          status.type === 'error' ? 'text-accent-red' :
-          status.type === 'warning' ? 'text-accent-orange' : 'text-white/60'
-        }`}>
-          <span className="w-2 h-2 rounded-full bg-current" />
-          {status.text}
-        </div>
-        <span className="ml-auto text-white/40">EasySQL</span>
       </div>
 
-      {showModal && (
-        <ConnectionModal
-          connection={editingConnection}
-          defaultType={defaultDbType}
-          onSave={handleSaveConnection}
-          onClose={() => { setShowModal(false); setDefaultDbType(undefined) }}
-        />
+      {/* 状态栏 */}
+      <div className="h-6 bg-light-surface flex items-center px-3 text-xs border-t border-border-default text-text-tertiary">
+        <span className={`w-2 h-2 rounded-full mr-2 ${connectedIds.size > 0 ? 'bg-success-500' : 'bg-text-disabled'}`} />
+        <span>{connectedIds.size > 0 ? `${connectedIds.size} 个连接` : '未连接'}</span>
+        <span className="ml-auto font-mono text-text-muted">EasySQL v2.0</span>
+      </div>
+
+      {/* 通知 */}
+      {notification && (
+        <div className={`fixed bottom-12 right-4 px-4 py-3 rounded-xl shadow-lg flex items-center gap-2 animate-slide-up z-50
+          ${notification.type === 'success' ? 'bg-white text-success-600 border border-success-200' : 
+            notification.type === 'error' ? 'bg-white text-danger-600 border border-danger-200' : 
+            'bg-white text-primary-600 border border-primary-200'}`}>
+          {notification.type === 'success' && <CheckCircle size={16} />}
+          {notification.type === 'error' && <XCircle size={16} />}
+          {notification.type === 'info' && <AlertCircle size={16} />}
+          <span className="text-sm">{notification.message}</span>
+        </div>
       )}
 
-      {/* 创建数据库对话框 */}
+      {/* 模态框 */}
+      <ConnectionModal
+        isOpen={showConnectionModal}
+        editingConnection={editingConnection}
+        initialType={newConnectionType}
+        onClose={() => { setShowConnectionModal(false); setEditingConnection(null); setNewConnectionType(undefined) }}
+        onSave={handleSaveConnection}
+      />
+
       <CreateDatabaseModal
         isOpen={showCreateDbModal}
+        connectionId={createDbConnectionId}
         onClose={() => { setShowCreateDbModal(false); setCreateDbConnectionId(null) }}
-        onSubmit={handleSubmitCreateDatabase}
+        onCreated={async () => {
+          if (createDbConnectionId) await fetchDatabases(createDbConnectionId)
+        }}
       />
 
-      {/* 创建表对话框 */}
       <CreateTableModal
         isOpen={showCreateTableModal}
-        database={createTableInfo?.database || ''}
-        onClose={() => { setShowCreateTableModal(false); setCreateTableInfo(null) }}
-        onSubmit={handleSubmitCreateTable}
+        connectionId={createTableContext?.connectionId || null}
+        database={createTableContext?.database || null}
+        onClose={() => { setShowCreateTableModal(false); setCreateTableContext(null) }}
+        onCreated={async () => {
+          if (createTableContext) await fetchTables(createTableContext.connectionId, createTableContext.database)
+        }}
       />
 
-      {/* 重命名表对话框 */}
-      <InputDialog
-        isOpen={showRenameDialog}
-        title="重命名表"
-        label="新表名"
-        placeholder="输入新的表名"
-        defaultValue={renameInfo?.table || ''}
-        confirmText="重命名"
-        icon={<Edit3 size={18} className="text-accent-blue" />}
-        onClose={() => { setShowRenameDialog(false); setRenameInfo(null) }}
-        onSubmit={handleSubmitRenameTable}
-      />
-
-      {/* 复制表对话框 */}
-      <InputDialog
-        isOpen={showDuplicateDialog}
-        title="复制表"
-        label="新表名"
-        placeholder="输入新的表名"
-        defaultValue={duplicateInfo?.table ? `${duplicateInfo.table}_copy` : ''}
-        confirmText="复制"
-        icon={<Copy size={18} className="text-accent-purple" />}
-        showDataOption
-        onClose={() => { setShowDuplicateDialog(false); setDuplicateInfo(null) }}
-        onSubmit={(name) => handleSubmitDuplicateTable(name, false)}
-        onSubmitWithData={handleSubmitDuplicateTable}
-      />
-
-      {/* 表设计器 */}
-      {showTableDesigner && tableDesignerInfo && (
-        <TableDesigner
-          isOpen={true}
-          mode={tableDesignerInfo.mode}
-          database={tableDesignerInfo.database}
-          tableName={tableDesignerInfo.tableName}
-          connectionId={tableDesignerInfo.connectionId}
-          dbType={getConnectionDbType(tableDesignerInfo.connectionId)}
-          onClose={() => { setShowTableDesigner(false); setTableDesignerInfo(null) }}
-          onSave={handleSaveTableDesign}
-          onGetTableInfo={tableDesignerInfo.mode === 'edit' ? handleGetTableInfo : undefined}
-          onGetDatabases={handleGetDatabasesForDesigner}
-          onGetTables={handleGetTablesForDesigner}
-          onGetColumns={handleGetColumnsForDesigner}
+      {inputDialog && (
+        <InputDialog
+          isOpen={inputDialog.isOpen}
+          title={inputDialog.title}
+          label={inputDialog.label}
+          defaultValue={inputDialog.defaultValue}
+          onClose={() => setInputDialog(null)}
+          onConfirm={inputDialog.onConfirm}
         />
       )}
     </div>
   )
 }
+
+export default App

@@ -1,352 +1,425 @@
-import { useState, useEffect } from 'react'
-import { X, Loader2, Shield, FolderOpen } from 'lucide-react'
-import { Connection, DatabaseType, DB_INFO } from '../types'
+import { X, Database, Check, AlertCircle, ChevronDown, ChevronRight, Shield, Globe, Server, Key, User, Folder, FileText } from 'lucide-react'
+import { Connection, DB_INFO, DatabaseType } from '../types'
+import { useState, useEffect, useRef } from 'react'
 import api from '../lib/electron-api'
 
 interface Props {
-  connection: Connection | null
-  defaultType?: DatabaseType
-  onSave: (conn: Connection) => void
+  isOpen: boolean
+  editingConnection?: Connection | null
+  initialType?: DatabaseType
   onClose: () => void
+  onSave: (conn: Omit<Connection, 'id'> & { id?: string }) => void
 }
 
-export default function ConnectionModal({ connection, defaultType, onSave, onClose }: Props) {
-  const initialType = defaultType || 'mysql'
-  const initialPort = DB_INFO[initialType]?.port || 3306
-  
-  const [form, setForm] = useState<Connection>({
-    id: '',
-    name: '',
-    type: initialType,
-    host: 'localhost',
-    port: initialPort,
-    username: '',
-    password: '',
-    database: '',
-    sshEnabled: false,
-    sshHost: '',
-    sshPort: 22,
-    sshUser: '',
-    sshPassword: '',
-    sshKey: '',
-  })
-  const [testing, setTesting] = useState(false)
-  const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null)
+export default function ConnectionModal({ isOpen, editingConnection, initialType, onClose, onSave }: Props) {
+  const [selectedType, setSelectedType] = useState<DatabaseType>(editingConnection?.type || initialType || 'mysql')
+  const [name, setName] = useState(editingConnection?.name || '')
+  const [host, setHost] = useState(editingConnection?.host || 'localhost')
+  const [port, setPort] = useState(editingConnection?.port || DB_INFO[selectedType].defaultPort)
+  const [username, setUsername] = useState(editingConnection?.username || '')
+  const [password, setPassword] = useState(editingConnection?.password || '')
+  const [database, setDatabase] = useState(editingConnection?.database || '')
+  const [file, setFile] = useState(editingConnection?.file || '')
+  const [useSSH, setUseSSH] = useState(editingConnection?.ssh?.enabled || false)
+  const [sshHost, setSshHost] = useState(editingConnection?.ssh?.host || '')
+  const [sshPort, setSshPort] = useState(editingConnection?.ssh?.port || 22)
+  const [sshUser, setSshUser] = useState(editingConnection?.ssh?.username || '')
+  const [sshPassword, setSshPassword] = useState(editingConnection?.ssh?.password || '')
+  const [sshKeyFile, setSshKeyFile] = useState(editingConnection?.ssh?.privateKeyPath || '')
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+
+  const nameInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (connection) {
-      setForm(connection)
-    } else {
-      const type = defaultType || 'mysql'
-      const port = DB_INFO[type]?.port || 3306
-      setForm(prev => ({ 
-        ...prev, 
-        id: `conn-${Date.now()}`,
-        type,
-        port,
-        name: DB_INFO[type]?.name || ''
-      }))
+    if (isOpen) {
+      const timer = setTimeout(() => nameInputRef.current?.focus(), 100)
+      return () => clearTimeout(timer)
     }
-  }, [connection, defaultType])
+  }, [isOpen])
+
+  useEffect(() => {
+    if (editingConnection) {
+      setSelectedType(editingConnection.type)
+      setName(editingConnection.name)
+      setHost(editingConnection.host || 'localhost')
+      setPort(editingConnection.port || DB_INFO[editingConnection.type].defaultPort)
+      setUsername(editingConnection.username || '')
+      setPassword(editingConnection.password || '')
+      setDatabase(editingConnection.database || '')
+      setFile(editingConnection.file || '')
+      setUseSSH(editingConnection.ssh?.enabled || false)
+      setSshHost(editingConnection.ssh?.host || '')
+      setSshPort(editingConnection.ssh?.port || 22)
+      setSshUser(editingConnection.ssh?.username || '')
+      setSshPassword(editingConnection.ssh?.password || '')
+      setSshKeyFile(editingConnection.ssh?.privateKeyPath || '')
+    } else {
+      const type = initialType || 'mysql'
+      setSelectedType(type)
+      setName('')
+      setHost('localhost')
+      setPort(DB_INFO[type].defaultPort)
+      setUsername('')
+      setPassword('')
+      setDatabase('')
+      setFile('')
+      setUseSSH(false)
+      setSshHost('')
+      setSshPort(22)
+      setSshUser('')
+      setSshPassword('')
+      setSshKeyFile('')
+    }
+    setMessage(null)
+  }, [editingConnection, isOpen, initialType])
 
   const handleTypeChange = (type: DatabaseType) => {
-    const info = DB_INFO[type]
-    setForm(prev => ({ ...prev, type, port: info?.port || prev.port }))
+    setSelectedType(type)
+    setPort(DB_INFO[type].defaultPort)
+    setMessage(null)
   }
 
   const handleTest = async () => {
-    setTesting(true)
-    setMessage(null)
-    
-    const result = await api.testConnection(form)
-    setMessage({
-      text: result?.message || '测试失败',
-      type: result?.success ? 'success' : 'error'
-    })
-    setTesting(false)
+    try {
+      const connData = buildConnection()
+      const result = await api.testConnection(connData)
+      if (result.success) {
+        setMessage({ type: 'success', text: '连接成功！' })
+      } else {
+        setMessage({ type: 'error', text: result.error || '连接失败' })
+      }
+    } catch (err) {
+      setMessage({ type: 'error', text: '测试失败：' + (err as Error).message })
+    }
+    setTimeout(() => setMessage(null), 3000)
+  }
+
+  const buildConnection = (): Omit<Connection, 'id'> & { id?: string } => {
+    const info = DB_INFO[selectedType]
+    return {
+      ...(editingConnection?.id ? { id: editingConnection.id } : {}),
+      type: selectedType,
+      name: name || `${info.name} 连接`,
+      host: info.needsHost ? host : undefined,
+      port: info.needsHost ? port : undefined,
+      username: info.needsAuth ? username : undefined,
+      password: info.needsAuth ? password : undefined,
+      database: database || undefined,
+      file: info.needsFile ? file : undefined,
+      ssh: useSSH && info.needsHost ? { enabled: true, host: sshHost, port: sshPort, username: sshUser, password: sshPassword || undefined, privateKeyPath: sshKeyFile || undefined } : undefined,
+    }
   }
 
   const handleSave = () => {
-    if (!form.name.trim()) {
-      setMessage({ text: '请输入连接名称', type: 'error' })
+    if (!name.trim()) {
+      setMessage({ type: 'error', text: '请输入连接名称' })
+      setTimeout(() => setMessage(null), 3000)
       return
     }
-    onSave(form)
+    onSave(buildConnection())
+    onClose()
   }
 
+  const handleSelectFile = async () => {
+    const filePath = await api.selectFile([{ name: 'SQLite', extensions: ['db', 'sqlite', 'sqlite3'] }])
+    if (filePath) setFile(filePath)
+  }
+
+  const handleSelectKeyFile = async () => {
+    const filePath = await api.selectFile([{ name: 'PEM', extensions: ['pem', 'key', 'ppk'] }])
+    if (filePath) setSshKeyFile(filePath)
+  }
+
+  if (!isOpen) return null
+
+  const info = DB_INFO[selectedType]
+  const isEditing = !!editingConnection
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in">
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      
-      {/* Metro 风格弹窗 */}
-      <div className="relative w-[560px] max-h-[90vh] bg-metro-bg flex flex-col overflow-hidden shadow-metro-xl animate-slide-up">
-        {/* 标题栏 */}
-        <div className="h-14 bg-accent-blue flex items-center justify-between px-5">
-          <span className="font-semibold text-lg">{connection ? '编辑连接' : '新建连接'}</span>
-          <button onClick={onClose} className="p-1.5 hover:bg-white/20 transition-colors rounded-sm">
-            <X size={20} />
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 animate-fade-in backdrop-blur-sm" onClick={onClose}>
+      <div className="w-[520px] max-h-[90vh] bg-white flex flex-col overflow-hidden rounded-2xl shadow-modal animate-scale-in" onClick={e => e.stopPropagation()}>
+        {/* 标题 */}
+        <div className="h-14 flex items-center justify-between px-5 border-b border-border-default">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ backgroundColor: info.color + '15' }}>
+              <span className="text-xl">{info.icon}</span>
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-text-primary">
+                {isEditing ? '编辑连接' : '新建连接'}
+              </h2>
+              <p className="text-xs text-text-muted">{info.name}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-light-hover rounded-lg transition-colors">
+            <X size={18} className="text-text-tertiary" />
           </button>
         </div>
 
         {/* 内容 */}
-        <div className="flex-1 overflow-y-auto p-5 space-y-5">
-          {/* 连接名称 */}
-          <div>
-            <label className="block text-sm text-text-secondary mb-2 font-medium">连接名称</label>
-            <input
-              type="text"
-              value={form.name}
-              onChange={(e) => setForm(prev => ({ ...prev, name: e.target.value }))}
-              placeholder="输入名称"
-              className="w-full h-10 px-4 bg-metro-surface border-2 border-transparent 
-                         focus:border-accent-blue text-sm transition-all rounded-sm"
-            />
-          </div>
-
-          {/* 数据库类型 - Metro 磁贴选择 */}
-          <div>
-            <label className="block text-sm text-text-secondary mb-3 font-medium">数据库类型</label>
-            <div className="grid grid-cols-3 gap-2">
-              {(Object.entries(DB_INFO) as [DatabaseType, typeof DB_INFO[DatabaseType]][]).map(([key, info]) => (
-                <button
-                  key={key}
-                  onClick={() => info.supported && handleTypeChange(key)}
-                  className={`h-16 flex items-center gap-3 px-4 transition-all metro-tile relative
-                    ${!info.supported ? 'cursor-not-allowed' : ''}
-                    ${form.type === key && info.supported
-                      ? 'ring-2 ring-white ring-inset shadow-metro-lg' 
-                      : info.supported ? 'opacity-60 hover:opacity-100' : ''}`}
-                  style={{ 
-                    backgroundColor: info.color,
-                    opacity: info.supported ? (form.type === key ? 1 : 0.6) : 0.3,
-                    filter: info.supported ? 'none' : 'grayscale(60%)'
-                  }}
-                  disabled={!info.supported}
-                  title={info.supported ? info.name : `${info.name} - 即将支持`}
-                >
-                  <span className="text-2xl">{info.icon}</span>
-                  <div className="flex flex-col items-start">
-                    <span className="text-sm font-medium">{info.name}</span>
-                    {!info.supported && (
-                      <span className="text-[10px] text-white/60">即将支持</span>
-                    )}
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* SQLite 文件选择 */}
-          {form.type === 'sqlite' ? (
+        <div className="flex-1 overflow-y-auto scrollbar-thin">
+          <div className="p-5 space-y-5">
+            {/* 数据库类型选择 */}
             <div>
-              <label className="block text-sm text-text-secondary mb-2 font-medium">数据库文件</label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={form.database}
-                  onChange={(e) => setForm(prev => ({ ...prev, database: e.target.value }))}
-                  placeholder="选择或输入 .db 文件路径"
-                  className="flex-1 h-10 px-4 bg-metro-surface border-2 border-transparent 
-                             focus:border-accent-blue text-sm transition-all rounded-sm"
-                />
-                <button
-                  onClick={async () => {
-                    const result = await api.selectFile(['db', 'sqlite', 'sqlite3'])
-                    if (result?.path) {
-                      setForm(prev => ({ ...prev, database: result.path }))
-                    }
-                  }}
-                  className="h-10 px-4 bg-metro-surface hover:bg-metro-hover flex items-center gap-2 text-sm transition-colors rounded-sm"
-                >
-                  <FolderOpen size={16} />
-                  浏览
-                </button>
+              <label className="block text-xs font-medium text-text-secondary mb-2">数据库类型</label>
+              <div className="flex flex-wrap gap-2">
+                {(Object.entries(DB_INFO) as [DatabaseType, typeof DB_INFO[DatabaseType]][])
+                  .filter(([, i]) => i.supported)
+                  .map(([type, i]) => (
+                    <button
+                      key={type}
+                      onClick={() => handleTypeChange(type)}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm transition-all
+                        ${selectedType === type 
+                          ? 'border-primary-500 bg-primary-50 text-primary-700 shadow-focus' 
+                          : 'border-border-default hover:border-border-strong text-text-primary hover:bg-light-hover'}`}
+                    >
+                      <span className="text-lg">{i.icon}</span>
+                      <span className="font-medium">{i.name}</span>
+                    </button>
+                  ))}
               </div>
-              <p className="text-xs text-text-disabled mt-2">如果文件不存在，将创建新的数据库</p>
             </div>
-          ) : (
-            <>
-              {/* 主机和端口 */}
-              <div className="grid grid-cols-4 gap-4">
-                <div className="col-span-3">
-                  <label className="block text-sm text-text-secondary mb-2 font-medium">主机</label>
+
+            {/* 连接名称 */}
+            <div>
+              <label className="block text-xs font-medium text-text-secondary mb-2">
+                <User size={12} className="inline mr-1" />
+                连接名称
+              </label>
+              <input
+                ref={nameInputRef}
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder={`我的${info.name}连接`}
+                className="w-full h-10 px-3 bg-light-surface border border-border-default rounded-lg focus:border-primary-500 focus:shadow-focus transition-all"
+              />
+            </div>
+
+            {/* SQLite 文件路径 */}
+            {info.needsFile && (
+              <div>
+                <label className="block text-xs font-medium text-text-secondary mb-2">
+                  <FileText size={12} className="inline mr-1" />
+                  数据库文件
+                </label>
+                <div className="flex gap-2">
                   <input
                     type="text"
-                    value={form.host}
-                    onChange={(e) => setForm(prev => ({ ...prev, host: e.target.value }))}
-                    placeholder="localhost"
-                    className="w-full h-10 px-4 bg-metro-surface border-2 border-transparent 
-                               focus:border-accent-blue text-sm transition-all rounded-sm"
+                    value={file}
+                    onChange={(e) => setFile(e.target.value)}
+                    placeholder="选择或输入 .db 文件路径"
+                    className="flex-1 h-10 px-3 bg-light-surface border border-border-default rounded-lg focus:border-primary-500 focus:shadow-focus transition-all"
                   />
-                </div>
-                <div>
-                  <label className="block text-sm text-text-secondary mb-2 font-medium">端口</label>
-                  <input
-                    type="number"
-                    value={form.port}
-                    onChange={(e) => setForm(prev => ({ ...prev, port: parseInt(e.target.value) || 0 }))}
-                    className="w-full h-10 px-4 bg-metro-surface border-2 border-transparent 
-                               focus:border-accent-blue text-sm transition-all rounded-sm"
-                  />
-                </div>
-              </div>
-
-              {/* 用户名密码 - Redis 只需要密码 */}
-              {form.type === 'redis' ? (
-                <div>
-                  <label className="block text-sm text-text-secondary mb-2 font-medium">
-                    密码 <span className="text-text-disabled font-normal">(可选)</span>
-                  </label>
-                  <input
-                    type="password"
-                    value={form.password}
-                    onChange={(e) => setForm(prev => ({ ...prev, password: e.target.value }))}
-                    placeholder="无密码时留空"
-                    className="w-full h-10 px-4 bg-metro-surface border-2 border-transparent 
-                               focus:border-accent-blue text-sm transition-all rounded-sm"
-                  />
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm text-text-secondary mb-2 font-medium">
-                      用户名 {form.type === 'mongodb' && <span className="text-text-disabled font-normal">(可选)</span>}
-                    </label>
-                    <input
-                      type="text"
-                      value={form.username}
-                      onChange={(e) => setForm(prev => ({ ...prev, username: e.target.value }))}
-                      placeholder={form.type === 'mongodb' ? '无认证时留空' : 'root'}
-                      className="w-full h-10 px-4 bg-metro-surface border-2 border-transparent 
-                                 focus:border-accent-blue text-sm transition-all rounded-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm text-text-secondary mb-2 font-medium">
-                      密码 {form.type === 'mongodb' && <span className="text-text-disabled font-normal">(可选)</span>}
-                    </label>
-                    <input
-                      type="password"
-                      value={form.password}
-                      onChange={(e) => setForm(prev => ({ ...prev, password: e.target.value }))}
-                      placeholder={form.type === 'mongodb' ? '无认证时留空' : ''}
-                      className="w-full h-10 px-4 bg-metro-surface border-2 border-transparent 
-                                 focus:border-accent-blue text-sm transition-all rounded-sm"
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* 数据库 */}
-              <div>
-                <label className="block text-sm text-text-secondary mb-2 font-medium">
-                  数据库 <span className="text-text-disabled font-normal">(可选)</span>
-                </label>
-                <input
-                  type="text"
-                  value={form.database}
-                  onChange={(e) => setForm(prev => ({ ...prev, database: e.target.value }))}
-                  placeholder={form.type === 'mongodb' ? '默认 admin' : '留空表示连接所有数据库'}
-                  className="w-full h-10 px-4 bg-metro-surface border-2 border-transparent 
-                             focus:border-accent-blue text-sm transition-all rounded-sm"
-                />
-              </div>
-            </>
-          )}
-
-          {/* SSH */}
-          <div className="pt-4 border-t border-metro-border">
-            <label className="flex items-center gap-3 cursor-pointer group">
-              <input
-                type="checkbox"
-                checked={form.sshEnabled}
-                onChange={(e) => setForm(prev => ({ ...prev, sshEnabled: e.target.checked }))}
-                className="w-5 h-5 accent-accent-blue cursor-pointer"
-              />
-              <Shield size={18} className={form.sshEnabled ? 'text-accent-green' : 'text-text-disabled'} />
-              <span className="text-sm font-medium group-hover:text-white transition-colors">SSH 隧道连接</span>
-            </label>
-
-            {form.sshEnabled && (
-              <div className="mt-4 p-4 bg-metro-surface rounded-sm space-y-4 border-l-2 border-accent-green">
-                <div className="grid grid-cols-4 gap-3">
-                  <div className="col-span-3">
-                    <label className="block text-xs text-text-tertiary mb-1.5">SSH 主机</label>
-                    <input
-                      type="text"
-                      value={form.sshHost}
-                      onChange={(e) => setForm(prev => ({ ...prev, sshHost: e.target.value }))}
-                      className="w-full h-9 px-3 bg-metro-bg border-2 border-transparent 
-                                 focus:border-accent-blue text-sm transition-all rounded-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-text-tertiary mb-1.5">端口</label>
-                    <input
-                      type="number"
-                      value={form.sshPort}
-                      onChange={(e) => setForm(prev => ({ ...prev, sshPort: parseInt(e.target.value) || 22 }))}
-                      className="w-full h-9 px-3 bg-metro-bg border-2 border-transparent 
-                                 focus:border-accent-blue text-sm transition-all rounded-sm"
-                    />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs text-text-tertiary mb-1.5">SSH 用户名</label>
-                    <input
-                      type="text"
-                      value={form.sshUser}
-                      onChange={(e) => setForm(prev => ({ ...prev, sshUser: e.target.value }))}
-                      className="w-full h-9 px-3 bg-metro-bg border-2 border-transparent 
-                                 focus:border-accent-blue text-sm transition-all rounded-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-text-tertiary mb-1.5">SSH 密码</label>
-                    <input
-                      type="password"
-                      value={form.sshPassword}
-                      onChange={(e) => setForm(prev => ({ ...prev, sshPassword: e.target.value }))}
-                      className="w-full h-9 px-3 bg-metro-bg border-2 border-transparent 
-                                 focus:border-accent-blue text-sm transition-all rounded-sm"
-                    />
-                  </div>
+                  <button
+                    onClick={handleSelectFile}
+                    className="h-10 px-4 bg-white hover:bg-light-hover border border-border-default rounded-lg text-sm text-text-primary transition-colors flex items-center gap-1.5"
+                  >
+                    <Folder size={14} />
+                    浏览
+                  </button>
                 </div>
               </div>
             )}
-          </div>
 
-          {/* 消息 */}
-          {message && (
-            <div className={`p-4 text-sm rounded-sm ${message.type === 'success' ? 'bg-accent-green/20 text-accent-green border-l-2 border-accent-green' : 'bg-accent-red/20 text-accent-red border-l-2 border-accent-red'}`}>
-              {message.text}
-            </div>
-          )}
+            {/* 主机和端口 */}
+            {info.needsHost && (
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-2">
+                  <label className="block text-xs font-medium text-text-secondary mb-2">
+                    <Globe size={12} className="inline mr-1" />
+                    主机
+                  </label>
+                  <input
+                    type="text"
+                    value={host}
+                    onChange={(e) => setHost(e.target.value)}
+                    placeholder="localhost"
+                    className="w-full h-10 px-3 bg-light-surface border border-border-default rounded-lg focus:border-primary-500 focus:shadow-focus transition-all"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-text-secondary mb-2">
+                    <Server size={12} className="inline mr-1" />
+                    端口
+                  </label>
+                  <input
+                    type="number"
+                    value={port}
+                    onChange={(e) => setPort(parseInt(e.target.value) || 0)}
+                    className="w-full h-10 px-3 bg-light-surface border border-border-default rounded-lg focus:border-primary-500 focus:shadow-focus transition-all"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* 认证信息 */}
+            {info.needsAuth && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-text-secondary mb-2">
+                    <User size={12} className="inline mr-1" />
+                    用户名
+                  </label>
+                  <input
+                    type="text"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    placeholder="root"
+                    className="w-full h-10 px-3 bg-light-surface border border-border-default rounded-lg focus:border-primary-500 focus:shadow-focus transition-all"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-text-secondary mb-2">
+                    <Key size={12} className="inline mr-1" />
+                    密码
+                  </label>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full h-10 px-3 bg-light-surface border border-border-default rounded-lg focus:border-primary-500 focus:shadow-focus transition-all"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* 数据库名称 */}
+            {info.needsHost && (
+              <div>
+                <label className="block text-xs font-medium text-text-secondary mb-2">
+                  <Database size={12} className="inline mr-1" />
+                  默认数据库
+                  <span className="text-text-muted font-normal ml-1">(可选)</span>
+                </label>
+                <input
+                  type="text"
+                  value={database}
+                  onChange={(e) => setDatabase(e.target.value)}
+                  placeholder="连接后自动选择的数据库"
+                  className="w-full h-10 px-3 bg-light-surface border border-border-default rounded-lg focus:border-primary-500 focus:shadow-focus transition-all"
+                />
+              </div>
+            )}
+
+            {/* SSH 设置 */}
+            {info.needsHost && (
+              <div className="border border-border-default rounded-xl overflow-hidden">
+                <button
+                  onClick={() => setShowAdvanced(!showAdvanced)}
+                  className="w-full flex items-center justify-between px-4 py-3 hover:bg-light-hover transition-colors"
+                >
+                  <div className="flex items-center gap-2">
+                    <Shield size={14} className="text-teal-500" />
+                    <span className="text-sm font-medium text-text-primary">SSH 隧道</span>
+                  </div>
+                  {showAdvanced ? <ChevronDown size={16} className="text-text-tertiary" /> : <ChevronRight size={16} className="text-text-tertiary" />}
+                </button>
+                
+                {showAdvanced && (
+                  <div className="px-4 pb-4 pt-2 border-t border-border-light bg-light-surface space-y-3">
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={useSSH}
+                        onChange={(e) => setUseSSH(e.target.checked)}
+                        className="w-4 h-4 rounded border-border-strong text-primary-500 focus:ring-primary-500"
+                      />
+                      <span className="text-sm text-text-secondary">启用 SSH 隧道</span>
+                    </label>
+                    
+                    {useSSH && (
+                      <div className="space-y-3 mt-3">
+                        <div className="grid grid-cols-3 gap-2">
+                          <div className="col-span-2">
+                            <label className="block text-xs text-text-muted mb-1">SSH 主机</label>
+                            <input
+                              type="text"
+                              value={sshHost}
+                              onChange={(e) => setSshHost(e.target.value)}
+                              className="w-full h-9 px-3 bg-white border border-border-default rounded-lg text-sm focus:border-primary-500 focus:shadow-focus"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-text-muted mb-1">端口</label>
+                            <input
+                              type="number"
+                              value={sshPort}
+                              onChange={(e) => setSshPort(parseInt(e.target.value) || 22)}
+                              className="w-full h-9 px-3 bg-white border border-border-default rounded-lg text-sm focus:border-primary-500 focus:shadow-focus"
+                            />
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-xs text-text-muted mb-1">用户名</label>
+                            <input
+                              type="text"
+                              value={sshUser}
+                              onChange={(e) => setSshUser(e.target.value)}
+                              className="w-full h-9 px-3 bg-white border border-border-default rounded-lg text-sm focus:border-primary-500 focus:shadow-focus"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-text-muted mb-1">密码</label>
+                            <input
+                              type="password"
+                              value={sshPassword}
+                              onChange={(e) => setSshPassword(e.target.value)}
+                              className="w-full h-9 px-3 bg-white border border-border-default rounded-lg text-sm focus:border-primary-500 focus:shadow-focus"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-xs text-text-muted mb-1">私钥文件 <span className="text-text-disabled">(可选)</span></label>
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              value={sshKeyFile}
+                              onChange={(e) => setSshKeyFile(e.target.value)}
+                              placeholder="~/.ssh/id_rsa"
+                              className="flex-1 h-9 px-3 bg-white border border-border-default rounded-lg text-sm focus:border-primary-500 focus:shadow-focus"
+                            />
+                            <button onClick={handleSelectKeyFile}
+                              className="h-9 px-3 bg-white hover:bg-light-hover border border-border-default rounded-lg text-sm">
+                              浏览
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 消息提示 */}
+            {message && (
+              <div className={`flex items-center gap-2 px-4 py-3 rounded-lg animate-slide-up
+                ${message.type === 'success' ? 'bg-success-50 text-success-600 border border-success-200' : 'bg-danger-50 text-danger-600 border border-danger-200'}`}>
+                {message.type === 'success' ? <Check size={16} /> : <AlertCircle size={16} />}
+                <span className="text-sm">{message.text}</span>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* 底部按钮 */}
-        <div className="h-16 bg-metro-surface flex items-center justify-end gap-3 px-5 border-t border-metro-border/50">
-          <button
-            onClick={handleTest}
-            disabled={testing}
-            className="h-10 px-5 bg-transparent border border-text-tertiary hover:border-white hover:bg-white/5
-                       text-sm transition-all disabled:opacity-50 flex items-center gap-2 rounded-sm"
-          >
-            {testing && <Loader2 size={14} className="animate-spin" />}
+        <div className="h-16 flex items-center justify-end gap-3 px-5 border-t border-border-default bg-light-surface">
+          <button onClick={handleTest}
+            className="h-9 px-4 bg-white hover:bg-light-hover border border-border-default rounded-lg text-sm font-medium text-text-primary transition-colors">
             测试连接
           </button>
-          <button
-            onClick={handleSave}
-            className="h-10 px-8 bg-accent-blue hover:bg-accent-blue-hover text-sm font-medium transition-all shadow-metro rounded-sm"
-          >
-            保存
-          </button>
-          <button
-            onClick={onClose}
-            className="h-10 px-5 bg-metro-hover hover:bg-metro-border text-sm transition-all rounded-sm"
-          >
+          <button onClick={onClose}
+            className="h-9 px-4 bg-white hover:bg-light-hover border border-border-default rounded-lg text-sm font-medium text-text-primary transition-colors">
             取消
+          </button>
+          <button onClick={handleSave}
+            className="h-9 px-5 bg-primary-500 hover:bg-primary-600 text-white rounded-lg text-sm font-medium shadow-btn hover:shadow-btn-hover transition-all">
+            {isEditing ? '保存' : '创建'}
           </button>
         </div>
       </div>
