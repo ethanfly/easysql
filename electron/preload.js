@@ -25,6 +25,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('db:updateRow', id, database, table, primaryKey, updates),
   deleteRow: (id, database, table, primaryKey) => 
     ipcRenderer.invoke('db:deleteRow', id, database, table, primaryKey),
+  insertRow: (id, database, table, columns, values) => 
+    ipcRenderer.invoke('db:insertRow', id, database, table, columns, values),
 
   // 数据库管理
   createDatabase: (id, dbName, charset, collation) => 

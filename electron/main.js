@@ -319,6 +319,18 @@ ipcMain.handle('db:deleteRow', async (event, id, database, table, primaryKey) =>
   }
 })
 
+ipcMain.handle('db:insertRow', async (event, id, database, table, columns, values) => {
+  const connInfo = await ensureConnection(id)
+  if (!connInfo) return { success: false, message: '连接不存在或已断开，请重新连接' }
+
+  try {
+    const result = await insertRow(connInfo.connection, connInfo.type, database, table, columns, values)
+    return { success: true, message: '插入成功', insertId: result?.insertId }
+  } catch (e) {
+    return { success: false, message: e.message }
+  }
+})
+
 // ============ 数据库管理操作 ============
 
 // 创建数据库
@@ -1532,6 +1544,75 @@ async function deleteRow(conn, type, database, table, primaryKey) {
       await request.query(`DELETE FROM [${table}] WHERE [${primaryKey.column}] = @pk`)
       break
     }
+  }
+}
+
+async function insertRow(conn, type, database, table, columns, values) {
+  switch (type) {
+    case 'mysql':
+    case 'mariadb': {
+      const colList = columns.map(c => `\`${c}\``).join(', ')
+      const placeholders = columns.map(() => '?').join(', ')
+      const [result] = await conn.query(
+        `INSERT INTO \`${database}\`.\`${table}\` (${colList}) VALUES (${placeholders})`,
+        values
+      )
+      return { insertId: result.insertId }
+    }
+    case 'postgresql':
+    case 'postgres': {
+      const colList = columns.map(c => `"${c}"`).join(', ')
+      const placeholders = columns.map((_, i) => `$${i + 1}`).join(', ')
+      const result = await conn.query(
+        `INSERT INTO "${table}" (${colList}) VALUES (${placeholders}) RETURNING *`,
+        values
+      )
+      return { insertId: result.rows[0]?.id }
+    }
+    case 'sqlite': {
+      const colList = columns.map(c => `"${c}"`).join(', ')
+      const placeholders = columns.map(() => '?').join(', ')
+      conn.run(`INSERT INTO "${table}" (${colList}) VALUES (${placeholders})`, values)
+      // 获取最后插入的行ID
+      const stmt = conn.prepare('SELECT last_insert_rowid() as id')
+      let insertId = null
+      if (stmt.step()) {
+        insertId = stmt.getAsObject().id
+      }
+      stmt.free()
+      return { insertId }
+    }
+    case 'mongodb': {
+      const db = conn.db(database)
+      const doc = {}
+      columns.forEach((col, i) => {
+        doc[col] = values[i]
+      })
+      const result = await db.collection(table).insertOne(doc)
+      return { insertId: result.insertedId.toString() }
+    }
+    case 'redis': {
+      await conn.select(parseInt(database) || 0)
+      // Redis: 假设第一个列是键名，第二个列是值
+      if (columns.length >= 2) {
+        await conn.set(values[0], values[1])
+      }
+      return { insertId: values[0] }
+    }
+    case 'sqlserver': {
+      const colList = columns.map(c => `[${c}]`).join(', ')
+      const request = conn.request()
+      columns.forEach((col, i) => {
+        request.input(`col${i}`, values[i])
+      })
+      const paramList = columns.map((_, i) => `@col${i}`).join(', ')
+      const result = await request.query(
+        `INSERT INTO [${table}] (${colList}) VALUES (${paramList}); SELECT SCOPE_IDENTITY() as id`
+      )
+      return { insertId: result.recordset[0]?.id }
+    }
+    default:
+      throw new Error(`不支持的数据库类型: ${type}`)
   }
 }
 

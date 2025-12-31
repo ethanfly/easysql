@@ -57,6 +57,7 @@ export interface TableTab {
   pendingChanges?: Map<string, Record<string, any>> // rowIndex -> { colName: newValue }
   deletedRows?: Set<number> // 待删除的行索引
   originalData?: any[] // 原始数据用于回滚
+  newRows?: any[] // 新增的行数据（尚未保存到数据库）
 }
 
 export const DB_INFO: Record<DatabaseType, { name: string; icon: string; color: string; port: number; supported: boolean }> = {

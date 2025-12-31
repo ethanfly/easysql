@@ -455,6 +455,40 @@ export default function App() {
         }
       }
       
+      // 插入新增行
+      if (tab.newRows && tab.newRows.length > 0) {
+        for (const newRow of tab.newRows) {
+          // 过滤掉所有值为null的列（只保留有值的列）
+          const columns: string[] = []
+          const values: any[] = []
+          
+          for (const [colName, value] of Object.entries(newRow)) {
+            if (value !== null && value !== undefined && value !== '') {
+              columns.push(colName)
+              values.push(value)
+            }
+          }
+          
+          // 如果所有列都是空的，跳过这行
+          if (columns.length === 0) {
+            continue
+          }
+          
+          const result = await api.insertRow(
+            tab.connectionId,
+            tab.database,
+            tab.tableName,
+            columns,
+            values
+          )
+          
+          if (result?.error) {
+            setStatus({ text: `插入失败: ${result.error}`, type: 'error' })
+            return
+          }
+        }
+      }
+      
       // 重新加载数据
       const result = await api.getTableData(
         tab.connectionId, tab.database, tab.tableName, tab.page, tab.pageSize
@@ -471,7 +505,8 @@ export default function App() {
               total: totalResult?.total || tab.total,
               originalData: result?.data || [],
               pendingChanges: new Map(), 
-              deletedRows: new Set() 
+              deletedRows: new Set(),
+              newRows: [] 
             } 
           : t
       ))
@@ -492,10 +527,59 @@ export default function App() {
         ...tab, 
         data: tab.originalData || tab.data,
         pendingChanges: new Map(), 
-        deletedRows: new Set() 
+        deletedRows: new Set(),
+        newRows: [] 
       }
     }))
     setStatus({ text: '已放弃修改', type: 'warning' })
+  }
+
+  // 新增表格行
+  const handleAddTableRow = (tabId: string) => {
+    setTabs(prev => prev.map(t => {
+      if (t.id !== tabId || !('tableName' in t)) return t
+      const tab = t as TableTab
+      
+      // 创建一个空行，所有列的值设为null
+      const newRow: Record<string, any> = {}
+      tab.columns.forEach(col => {
+        newRow[col.name] = null
+      })
+      
+      const newRows = [...(tab.newRows || []), newRow]
+      
+      return { ...tab, newRows }
+    }))
+    setStatus({ text: '已添加新行', type: 'info' })
+  }
+
+  // 更新新增行的数据
+  const handleUpdateNewRow = (tabId: string, rowIndex: number, colName: string, value: any) => {
+    setTabs(prev => prev.map(t => {
+      if (t.id !== tabId || !('tableName' in t)) return t
+      const tab = t as TableTab
+      
+      const newRows = [...(tab.newRows || [])]
+      if (newRows[rowIndex]) {
+        newRows[rowIndex] = { ...newRows[rowIndex], [colName]: value }
+      }
+      
+      return { ...tab, newRows }
+    }))
+  }
+
+  // 删除新增行
+  const handleDeleteNewRow = (tabId: string, rowIndex: number) => {
+    setTabs(prev => prev.map(t => {
+      if (t.id !== tabId || !('tableName' in t)) return t
+      const tab = t as TableTab
+      
+      const newRows = [...(tab.newRows || [])]
+      newRows.splice(rowIndex, 1)
+      
+      return { ...tab, newRows }
+    }))
+    setStatus({ text: '已删除新增行', type: 'info' })
   }
 
   // 刷新表数据
@@ -523,7 +607,8 @@ export default function App() {
               total: totalResult?.total || tab.total,
               originalData: result?.data || [], 
               pendingChanges: new Map(), 
-              deletedRows: new Set() 
+              deletedRows: new Set(),
+              newRows: []  // 刷新时清空新增行
             } 
           : t
       ))
@@ -980,6 +1065,9 @@ export default function App() {
           onSaveTableChanges={handleSaveTableChanges}
           onDiscardTableChanges={handleDiscardTableChanges}
           onRefreshTable={handleRefreshTable}
+          onAddTableRow={handleAddTableRow}
+          onUpdateNewRow={handleUpdateNewRow}
+          onDeleteNewRow={handleDeleteNewRow}
           loadingTables={loadingTables}
           onNewConnectionWithType={(type) => {
             setEditingConnection(null)

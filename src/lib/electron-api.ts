@@ -22,6 +22,7 @@ declare global {
       getTableData: (id: string, database: string, table: string, page: number, pageSize: number) => Promise<TableDataResult>
       updateRow: (id: string, database: string, table: string, primaryKey: { column: string; value: any }, updates: Record<string, any>) => Promise<{ success: boolean; message: string }>
       deleteRow: (id: string, database: string, table: string, primaryKey: { column: string; value: any }) => Promise<{ success: boolean; message: string }>
+      insertRow: (id: string, database: string, table: string, columns: string[], values: any[]) => Promise<{ success: boolean; message: string; insertId?: number }>
       
       // 数据库管理
       createDatabase: (id: string, dbName: string, charset?: string, collation?: string) => Promise<{ success: boolean; message: string }>
@@ -327,6 +328,17 @@ const api = {
     try {
       const result = await electronAPI.deleteRow(id, database, tableName, primaryKey)
       return { success: result.success, error: result.success ? undefined : result.message }
+    } catch (e: any) {
+      return { success: false, error: e.toString() }
+    }
+  },
+
+  insertRow: async (id: string, database: string, tableName: string, columns: string[], values: any[]): Promise<{ success?: boolean; error?: string; insertId?: number }> => {
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) return { success: false, error: 'Electron API 不可用' }
+    try {
+      const result = await electronAPI.insertRow(id, database, tableName, columns, values)
+      return { success: result.success, error: result.success ? undefined : result.message, insertId: result.insertId }
     } catch (e: any) {
       return { success: false, error: e.toString() }
     }

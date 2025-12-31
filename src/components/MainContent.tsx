@@ -1,4 +1,4 @@
-import { X, Play, Plus, Table2, ChevronLeft, ChevronRight, FolderOpen, Save, AlignLeft, Download, FileSpreadsheet, FileCode, Database, RotateCcw, Loader2 } from 'lucide-react'
+import { X, Play, Plus, Minus, Table2, ChevronLeft, ChevronRight, FolderOpen, Save, AlignLeft, Download, FileSpreadsheet, FileCode, Database, RotateCcw, Loader2, Check, RefreshCw } from 'lucide-react'
 import { QueryTab, DB_INFO, DatabaseType, TableInfo, ColumnInfo, TableTab } from '../types'
 import { useState, useRef, useEffect, useCallback, memo, Suspense, lazy } from 'react'
 import { format } from 'sql-formatter'
@@ -41,6 +41,9 @@ interface Props {
   onSaveTableChanges?: (tabId: string) => Promise<void>
   onDiscardTableChanges?: (tabId: string) => void
   onRefreshTable?: (tabId: string) => void
+  onAddTableRow?: (tabId: string) => void  // 新增行
+  onUpdateNewRow?: (tabId: string, rowIndex: number, colName: string, value: any) => void  // 更新新增行
+  onDeleteNewRow?: (tabId: string, rowIndex: number) => void  // 删除新增行
   loadingTables?: Set<string>  // 正在加载的表标签ID
 }
 
@@ -66,6 +69,9 @@ const MainContent = memo(function MainContent({
   onSaveTableChanges,
   onDiscardTableChanges,
   onRefreshTable,
+  onAddTableRow,
+  onUpdateNewRow,
+  onDeleteNewRow,
   loadingTables,
 }: Props) {
   // 快捷键处理
@@ -171,6 +177,9 @@ const MainContent = memo(function MainContent({
               onSave={() => onSaveTableChanges?.(currentTab.id)}
               onDiscard={() => onDiscardTableChanges?.(currentTab.id)}
               onRefresh={() => onRefreshTable?.(currentTab.id)}
+              onAddRow={() => onAddTableRow?.(currentTab.id)}
+              onUpdateNewRow={(rowIndex, colName, value) => onUpdateNewRow?.(currentTab.id, rowIndex, colName, value)}
+              onDeleteNewRow={(rowIndex) => onDeleteNewRow?.(currentTab.id, rowIndex)}
             />
           ) : (
             <QueryEditor
@@ -286,9 +295,12 @@ const TableViewer = memo(function TableViewer({
   onDeleteRows, 
   onSave, 
   onDiscard,
-  onRefresh
+  onRefresh,
+  onAddRow,
+  onUpdateNewRow,
+  onDeleteNewRow,
 }: { 
-  tab: TableTab & { pendingChanges?: Map<string, any>; deletedRows?: Set<number> }
+  tab: TableTab & { pendingChanges?: Map<string, any>; deletedRows?: Set<number>; newRows?: any[] }
   isLoading?: boolean
   onLoadPage: (page: number) => void
   onChangePageSize?: (pageSize: number) => void
@@ -298,9 +310,12 @@ const TableViewer = memo(function TableViewer({
   onSave?: () => void
   onDiscard?: () => void
   onRefresh?: () => void
+  onAddRow?: () => void
+  onUpdateNewRow?: (rowIndex: number, colName: string, value: any) => void
+  onDeleteNewRow?: (rowIndex: number) => void
 }) {
   const totalPages = Math.ceil(tab.total / tab.pageSize)
-  const hasChanges = (tab.pendingChanges?.size || 0) > 0 || (tab.deletedRows?.size || 0) > 0
+  const hasChanges = (tab.pendingChanges?.size || 0) > 0 || (tab.deletedRows?.size || 0) > 0 || (tab.newRows?.length || 0) > 0
   const primaryKeyCol = tab.columns.find(c => c.key === 'PRI')?.name || tab.columns[0]?.name
   
   // 计算修改过的单元格
@@ -312,9 +327,25 @@ const TableViewer = memo(function TableViewer({
     })
   })
   
-  // 过滤掉已删除的行
-  const visibleData = tab.data.filter((_, i) => !tab.deletedRows?.has(i))
+  // 标记新增行的单元格
+  const newRowCount = tab.newRows?.length || 0
+  if (newRowCount > 0) {
+    const existingDataCount = tab.data.filter((_, i) => !tab.deletedRows?.has(i)).length
+    for (let i = 0; i < newRowCount; i++) {
+      const rowIndex = existingDataCount + i
+      tab.columns.forEach(col => {
+        modifiedCells.add(`${rowIndex}-${col.name}`)
+      })
+    }
+  }
+  
+  // 过滤掉已删除的行，并添加新增的行
+  const visibleData = [...tab.data.filter((_, i) => !tab.deletedRows?.has(i)), ...(tab.newRows || [])]
   const originalIndexMap = tab.data.map((_, i) => i).filter(i => !tab.deletedRows?.has(i))
+  
+  // 计算修改统计
+  const changesCount = (tab.pendingChanges?.size || 0) + (tab.deletedRows?.size || 0) + (tab.newRows?.length || 0)
+  const existingDataCount = tab.data.filter((_, i) => !tab.deletedRows?.has(i)).length
   
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -333,27 +364,13 @@ const TableViewer = memo(function TableViewer({
           )}
         </div>
         
-        {/* 中间：修改提示和按钮 */}
+        {/* 中间：修改提示 */}
         {hasChanges && (
           <div className="flex items-center gap-2 flex-shrink-0">
             <span className="text-xs text-accent-orange font-medium px-1.5 py-0.5 bg-accent-orange/10 rounded">
-              {(tab.pendingChanges?.size || 0) + (tab.deletedRows?.size || 0)}项
+              {changesCount}项待保存
+              {newRowCount > 0 && <span className="ml-1 text-accent-green">+{newRowCount}新增</span>}
             </span>
-            <button
-              onClick={onSave}
-              className="h-6 px-2 bg-accent-green hover:bg-accent-green-hover flex items-center gap-1 text-xs font-medium transition-all"
-              title="保存修改 (Ctrl+S)"
-            >
-              <Save size={11} />
-              保存
-            </button>
-            <button
-              onClick={onDiscard}
-              className="h-6 px-2 bg-metro-surface hover:bg-metro-hover flex items-center gap-1 text-xs transition-all border border-metro-border"
-            >
-              <RotateCcw size={11} />
-              放弃
-            </button>
           </div>
         )}
         
@@ -412,19 +429,144 @@ const TableViewer = memo(function TableViewer({
             primaryKeyColumn={primaryKeyCol}
             modifiedCells={modifiedCells}
             onCellChange={(visibleRowIndex, colName, value) => {
-              const originalIndex = originalIndexMap[visibleRowIndex]
-              onCellChange?.(originalIndex, colName, value)
+              // 判断是修改现有行还是新增行
+              if (visibleRowIndex >= existingDataCount) {
+                // 这是新增的行
+                const newRowIndex = visibleRowIndex - existingDataCount
+                onUpdateNewRow?.(newRowIndex, colName, value)
+              } else {
+                const originalIndex = originalIndexMap[visibleRowIndex]
+                onCellChange?.(originalIndex, colName, value)
+              }
             }}
             onDeleteRow={(visibleRowIndex) => {
-              const originalIndex = originalIndexMap[visibleRowIndex]
-              onDeleteRow?.(originalIndex)
+              if (visibleRowIndex >= existingDataCount) {
+                // 删除新增的行
+                const newRowIndex = visibleRowIndex - existingDataCount
+                onDeleteNewRow?.(newRowIndex)
+              } else {
+                const originalIndex = originalIndexMap[visibleRowIndex]
+                onDeleteRow?.(originalIndex)
+              }
             }}
             onDeleteRows={(visibleRowIndices) => {
-              const originalIndices = visibleRowIndices.map(i => originalIndexMap[i])
-              onDeleteRows?.(originalIndices)
+              const originalIndices: number[] = []
+              const newRowIndices: number[] = []
+              
+              visibleRowIndices.forEach(i => {
+                if (i >= existingDataCount) {
+                  newRowIndices.push(i - existingDataCount)
+                } else {
+                  originalIndices.push(originalIndexMap[i])
+                }
+              })
+              
+              if (originalIndices.length > 0) {
+                onDeleteRows?.(originalIndices)
+              }
+              // 从后往前删除新增行，避免索引问题
+              newRowIndices.sort((a, b) => b - a).forEach(i => {
+                onDeleteNewRow?.(i)
+              })
             }}
             onRefresh={onRefresh}
+            onSave={onSave}
+            onAddRow={onAddRow}
+            onBatchUpdate={(updates) => {
+              updates.forEach(({ rowIndex, colName, value }) => {
+                // 判断是修改现有行还是新增行
+                if (rowIndex >= existingDataCount) {
+                  const newRowIndex = rowIndex - existingDataCount
+                  onUpdateNewRow?.(newRowIndex, colName, value)
+                } else {
+                  const originalIndex = originalIndexMap[rowIndex]
+                  if (originalIndex !== undefined) {
+                    onCellChange?.(originalIndex, colName, value)
+                  }
+                }
+              })
+            }}
           />
+        </div>
+      </div>
+
+      {/* 底部操作栏 - 参考 Navicat 风格 */}
+      <div className="bg-metro-bg border-t border-metro-border/50 flex items-center px-2 gap-1" style={{ flexShrink: 0, height: 32 }}>
+        {/* 左侧：数据操作按钮 */}
+        <div className="flex items-center gap-0.5">
+          <button
+            onClick={onAddRow}
+            disabled={isLoading}
+            className="w-7 h-7 flex items-center justify-center hover:bg-metro-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors rounded text-text-secondary hover:text-white"
+            title="添加行"
+          >
+            <Plus size={16} />
+          </button>
+          <button
+            onClick={() => {
+              // 如果有选中行，删除选中的行（此功能已在VirtualDataTable中的右键菜单中实现）
+              // 这里作为快捷按钮，可以删除最后一个新增行
+              if (newRowCount > 0) {
+                onDeleteNewRow?.(newRowCount - 1)
+              }
+            }}
+            disabled={isLoading || newRowCount === 0}
+            className="w-7 h-7 flex items-center justify-center hover:bg-metro-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors rounded text-text-secondary hover:text-white"
+            title="删除行"
+          >
+            <Minus size={16} />
+          </button>
+          
+          <div className="w-px h-4 bg-metro-border mx-1" />
+          
+          <button
+            onClick={onSave}
+            disabled={isLoading || !hasChanges}
+            className={`w-7 h-7 flex items-center justify-center transition-colors rounded ${
+              hasChanges 
+                ? 'hover:bg-accent-green/20 text-accent-green' 
+                : 'text-text-tertiary opacity-40 cursor-not-allowed'
+            }`}
+            title="保存修改 (Ctrl+S)"
+          >
+            <Check size={16} />
+          </button>
+          <button
+            onClick={onDiscard}
+            disabled={isLoading || !hasChanges}
+            className={`w-7 h-7 flex items-center justify-center transition-colors rounded ${
+              hasChanges 
+                ? 'hover:bg-accent-red/20 text-accent-red' 
+                : 'text-text-tertiary opacity-40 cursor-not-allowed'
+            }`}
+            title="放弃修改"
+          >
+            <X size={16} />
+          </button>
+          <button
+            onClick={onRefresh}
+            disabled={isLoading}
+            className="w-7 h-7 flex items-center justify-center hover:bg-metro-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors rounded text-text-secondary hover:text-white"
+            title="刷新数据"
+          >
+            <RefreshCw size={14} />
+          </button>
+        </div>
+        
+        {/* 中间：状态信息 */}
+        <div className="flex-1 flex items-center justify-center text-xs text-text-tertiary">
+          {hasChanges ? (
+            <span className="text-accent-orange">
+              {tab.pendingChanges?.size || 0}修改 · {tab.deletedRows?.size || 0}删除 · {newRowCount}新增
+            </span>
+          ) : (
+            <span>共 {visibleData.length} 行</span>
+          )}
+        </div>
+        
+        {/* 右侧：SQL 提示 */}
+        <div className="text-xs text-text-disabled">
+          SELECT * FROM `{tab.tableName}` LIMIT {tab.pageSize}
         </div>
       </div>
     </div>

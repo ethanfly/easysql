@@ -19,6 +19,9 @@ interface VirtualDataTableProps {
   onDeleteRow?: (rowIndex: number) => void
   onDeleteRows?: (rowIndices: number[]) => void
   onRefresh?: () => void
+  onSave?: () => void  // 保存回调
+  onAddRow?: () => void  // 新增行回调
+  onBatchUpdate?: (updates: { rowIndex: number; colName: string; value: any }[]) => void  // 批量更新回调
   modifiedCells?: Set<string>
   rowHeight?: number
   overscan?: number
@@ -84,6 +87,9 @@ const VirtualDataTable = memo(function VirtualDataTable({
   onDeleteRow,
   onDeleteRows,
   onRefresh,
+  onSave,
+  onAddRow,
+  onBatchUpdate,
   modifiedCells,
   rowHeight = 28,
   overscan = 20
@@ -349,22 +355,267 @@ const VirtualDataTable = memo(function VirtualDataTable({
     jumpToMatch(prevIndex)
   }, [currentMatchIndex, matchesArray.length, jumpToMatch])
 
+  // 移动到下一个单元格
+  const moveToNextCell = useCallback((currentRow: number, currentCol: string, direction: 'next' | 'prev' = 'next') => {
+    const currentColIndex = getColIndex(currentCol)
+    let nextRow = currentRow
+    let nextColIndex = direction === 'next' ? currentColIndex + 1 : currentColIndex - 1
+    
+    if (direction === 'next') {
+      if (nextColIndex >= sortedColumns.length) {
+        nextColIndex = 0
+        nextRow = currentRow + 1
+        if (nextRow >= data.length) {
+          nextRow = data.length - 1
+          nextColIndex = sortedColumns.length - 1
+        }
+      }
+    } else {
+      if (nextColIndex < 0) {
+        nextColIndex = sortedColumns.length - 1
+        nextRow = currentRow - 1
+        if (nextRow < 0) {
+          nextRow = 0
+          nextColIndex = 0
+        }
+      }
+    }
+    
+    const nextColName = sortedColumns[nextColIndex]?.name
+    if (nextColName) {
+      setActiveCell({ row: nextRow, col: nextColName })
+      setSelectedCells(new Set([`${nextRow}-${nextColName}`]))
+      
+      // 自动滚动到可见区域
+      const container = containerRef.current
+      if (container) {
+        const targetTop = nextRow * rowHeight
+        const visibleTop = container.scrollTop
+        const visibleBottom = visibleTop + containerHeight
+        
+        if (targetTop < visibleTop) {
+          container.scrollTop = targetTop
+        } else if (targetTop + rowHeight > visibleBottom) {
+          container.scrollTop = targetTop - containerHeight + rowHeight
+        }
+      }
+    }
+    
+    return { row: nextRow, col: sortedColumns[nextColIndex]?.name }
+  }, [getColIndex, sortedColumns, data.length, rowHeight, containerHeight])
+
+  // 复制选中的单元格数据（Navicat风格：制表符分隔列，换行符分隔行）
+  const copySelectedCells = useCallback(async () => {
+    if (selectedCells.size === 0) return
+    
+    // 解析选中的单元格，获取行列范围
+    const cellsArray = [...selectedCells]
+    const rowIndices = new Set<number>()
+    const colIndices = new Set<number>()
+    
+    cellsArray.forEach(cellKey => {
+      const idx = cellKey.indexOf('-')
+      const rowIndex = parseInt(cellKey.substring(0, idx))
+      const colName = cellKey.substring(idx + 1)
+      rowIndices.add(rowIndex)
+      colIndices.add(getColIndex(colName))
+    })
+    
+    const sortedRows = [...rowIndices].sort((a, b) => a - b)
+    const sortedColIndices = [...colIndices].sort((a, b) => a - b)
+    
+    // 构建复制的文本（制表符分隔列，换行符分隔行）
+    const lines: string[] = []
+    for (const rowIndex of sortedRows) {
+      const row = data[rowIndex]
+      if (!row) continue
+      
+      const values: string[] = []
+      for (const colIdx of sortedColIndices) {
+        const col = sortedColumns[colIdx]
+        if (!col) continue
+        const cellKey = `${rowIndex}-${col.name}`
+        // 只复制选中的单元格
+        if (selectedCells.has(cellKey)) {
+          const value = row[col.name]
+          values.push(value === null || value === undefined ? '' : String(value))
+        } else {
+          values.push('')
+        }
+      }
+      lines.push(values.join('\t'))
+    }
+    
+    const text = lines.join('\n')
+    await navigator.clipboard.writeText(text)
+    return { rows: sortedRows.length, cols: sortedColIndices.length }
+  }, [selectedCells, data, sortedColumns, getColIndex])
+
+  // 粘贴数据到选中的单元格（Navicat风格：自动扩展到多个单元格，超出则新增行）
+  const pasteToSelectedCells = useCallback(async () => {
+    if (!activeCell || !editable) return
+    
+    const text = await navigator.clipboard.readText()
+    if (!text) return
+    
+    // 解析粘贴的数据（制表符分隔列，换行符分隔行）
+    const lines = text.split('\n').map(line => line.split('\t'))
+    if (lines.length === 0) return
+    
+    const startRow = activeCell.row
+    const startColIdx = getColIndex(activeCell.col)
+    
+    const updates: { rowIndex: number; colName: string; value: any }[] = []
+    let needNewRows = 0
+    
+    for (let i = 0; i < lines.length; i++) {
+      const rowIndex = startRow + i
+      const lineData = lines[i]
+      
+      // 检查是否需要新增行
+      if (rowIndex >= data.length) {
+        needNewRows++
+      }
+      
+      for (let j = 0; j < lineData.length; j++) {
+        const colIdx = startColIdx + j
+        if (colIdx >= sortedColumns.length) continue
+        
+        const col = sortedColumns[colIdx]
+        const value = lineData[j]
+        
+        updates.push({
+          rowIndex,
+          colName: col.name,
+          value: value === '' ? null : value
+        })
+      }
+    }
+    
+    // 先新增需要的行
+    for (let i = 0; i < needNewRows; i++) {
+      onAddRow?.()
+    }
+    
+    // 批量更新或逐个更新
+    if (onBatchUpdate && updates.length > 0) {
+      // 稍微延迟以确保新增行已经创建
+      setTimeout(() => {
+        onBatchUpdate(updates)
+      }, needNewRows > 0 ? 50 : 0)
+    } else {
+      // 逐个更新
+      setTimeout(() => {
+        updates.forEach(({ rowIndex, colName, value }) => {
+          onCellChange?.(rowIndex, colName, value)
+        })
+      }, needNewRows > 0 ? 50 : 0)
+    }
+    
+    // 更新选中区域
+    const newSelectedCells = new Set<string>()
+    for (let i = 0; i < lines.length; i++) {
+      for (let j = 0; j < lines[i].length; j++) {
+        const colIdx = startColIdx + j
+        if (colIdx >= sortedColumns.length) continue
+        newSelectedCells.add(`${startRow + i}-${sortedColumns[colIdx].name}`)
+      }
+    }
+    setSelectedCells(newSelectedCells)
+    
+    return { rows: lines.length, cols: lines[0]?.length || 0, newRows: needNewRows }
+  }, [activeCell, editable, data, sortedColumns, getColIndex, onAddRow, onBatchUpdate, onCellChange])
+
   // 快捷键
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+F 搜索
       if ((e.ctrlKey || e.metaKey) && e.key === 'f' && isFocused) {
         e.preventDefault()
         setShowSearch(true)
         setTimeout(() => searchInputRef.current?.focus(), 50)
       }
+      // Escape 关闭搜索
       if (e.key === 'Escape' && showSearch) {
         setShowSearch(false)
         setSearchQuery('')
       }
+      // Ctrl+S 保存
+      if ((e.ctrlKey || e.metaKey) && e.key === 's' && isFocused && editable) {
+        e.preventDefault()
+        onSave?.()
+      }
+      // Ctrl+C 复制
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c' && isFocused && !editingCell && selectedCells.size > 0) {
+        e.preventDefault()
+        copySelectedCells()
+      }
+      // Ctrl+V 粘贴
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v' && isFocused && !editingCell && editable && activeCell) {
+        e.preventDefault()
+        pasteToSelectedCells()
+      }
+      // F5 刷新
+      if (e.key === 'F5' && isFocused) {
+        e.preventDefault()
+        onRefresh?.()
+      }
+      // Tab 键导航（当不在编辑状态时）
+      if (e.key === 'Tab' && isFocused && !editingCell && activeCell) {
+        e.preventDefault()
+        moveToNextCell(activeCell.row, activeCell.col, e.shiftKey ? 'prev' : 'next')
+      }
+      // 方向键导航
+      if (isFocused && !editingCell && activeCell) {
+        if (e.key === 'ArrowRight') {
+          e.preventDefault()
+          moveToNextCell(activeCell.row, activeCell.col, 'next')
+        } else if (e.key === 'ArrowLeft') {
+          e.preventDefault()
+          moveToNextCell(activeCell.row, activeCell.col, 'prev')
+        } else if (e.key === 'ArrowDown') {
+          e.preventDefault()
+          const newRow = Math.min(activeCell.row + 1, data.length - 1)
+          setActiveCell({ row: newRow, col: activeCell.col })
+          setSelectedCells(new Set([`${newRow}-${activeCell.col}`]))
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault()
+          const newRow = Math.max(activeCell.row - 1, 0)
+          setActiveCell({ row: newRow, col: activeCell.col })
+          setSelectedCells(new Set([`${newRow}-${activeCell.col}`]))
+        }
+      }
+      // Enter 进入编辑模式
+      if (e.key === 'Enter' && isFocused && !editingCell && activeCell && editable) {
+        e.preventDefault()
+        const value = data[activeCell.row]?.[activeCell.col]
+        setEditingCell({ row: activeCell.row, col: activeCell.col })
+        setEditValue(value === null ? '' : String(value))
+        setTimeout(() => inputRef.current?.focus(), 0)
+      }
+      // Delete 或 Backspace 清空单元格
+      if ((e.key === 'Delete' || e.key === 'Backspace') && isFocused && !editingCell && activeCell && editable) {
+        e.preventDefault()
+        onCellChange?.(activeCell.row, activeCell.col, null)
+      }
+      // 直接输入进入编辑模式（可打印字符）
+      if (isFocused && !editingCell && activeCell && editable && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault()
+        setEditingCell({ row: activeCell.row, col: activeCell.col })
+        setEditValue(e.key) // 直接用输入的字符作为初始值
+        setTimeout(() => {
+          const input = inputRef.current
+          if (input) {
+            input.focus()
+            // 将光标移到末尾
+            input.setSelectionRange(input.value.length, input.value.length)
+          }
+        }, 0)
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isFocused, showSearch])
+  }, [isFocused, showSearch, editable, onSave, onRefresh, editingCell, activeCell, moveToNextCell, data, onCellChange, selectedCells, copySelectedCells, pasteToSelectedCells])
 
   // 全选
   const handleSelectAll = useCallback(() => {
@@ -603,7 +854,7 @@ const VirtualDataTable = memo(function VirtualDataTable({
                           maxWidth: colWidth,
                           height: rowHeight,
                           boxShadow: isPinned && scrollLeft > 0 ? '2px 0 4px rgba(0,0,0,0.3)' : 'none',
-                          outline: isActiveCell ? '1px solid #007acc' : 'none',
+                          outline: isActiveCell && !isEditing ? '1px solid #007acc' : 'none',
                           outlineOffset: '-1px',
                           zIndex: isPinned ? 10 : 1,
                         }}
@@ -641,12 +892,67 @@ const VirtualDataTable = memo(function VirtualDataTable({
                             }}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter') {
+                                // 保存当前单元格
                                 if (editValue !== (value === null ? '' : String(value))) {
                                   onCellChange?.(actualRowIndex, col.name, editValue === '' ? null : editValue)
                                 }
                                 setEditingCell(null)
+                                // 移动到下一行同列
+                                const newRow = Math.min(actualRowIndex + 1, data.length - 1)
+                                setActiveCell({ row: newRow, col: col.name })
+                                setSelectedCells(new Set([`${newRow}-${col.name}`]))
+                              } else if (e.key === 'Tab') {
+                                e.preventDefault()
+                                // 保存当前单元格
+                                if (editValue !== (value === null ? '' : String(value))) {
+                                  onCellChange?.(actualRowIndex, col.name, editValue === '' ? null : editValue)
+                                }
+                                // 计算下一个单元格位置
+                                const currentColIndex = getColIndex(col.name)
+                                let nextRow = actualRowIndex
+                                let nextColIndex = e.shiftKey ? currentColIndex - 1 : currentColIndex + 1
+                                
+                                if (!e.shiftKey) {
+                                  if (nextColIndex >= sortedColumns.length) {
+                                    nextColIndex = 0
+                                    nextRow = actualRowIndex + 1
+                                    if (nextRow >= data.length) {
+                                      nextRow = data.length - 1
+                                      nextColIndex = sortedColumns.length - 1
+                                    }
+                                  }
+                                } else {
+                                  if (nextColIndex < 0) {
+                                    nextColIndex = sortedColumns.length - 1
+                                    nextRow = actualRowIndex - 1
+                                    if (nextRow < 0) {
+                                      nextRow = 0
+                                      nextColIndex = 0
+                                    }
+                                  }
+                                }
+                                
+                                const nextColName = sortedColumns[nextColIndex]?.name
+                                if (nextColName) {
+                                  // 直接切换到下一个单元格的编辑状态
+                                  const nextValue = data[nextRow]?.[nextColName]
+                                  setEditingCell({ row: nextRow, col: nextColName })
+                                  setEditValue(nextValue === null ? '' : String(nextValue))
+                                  setActiveCell({ row: nextRow, col: nextColName })
+                                  setSelectedCells(new Set([`${nextRow}-${nextColName}`]))
+                                  setTimeout(() => inputRef.current?.focus(), 0)
+                                }
                               } else if (e.key === 'Escape') {
                                 setEditingCell(null)
+                              } else if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+                                e.preventDefault()
+                                // 保存当前单元格
+                                if (editValue !== (value === null ? '' : String(value))) {
+                                  onCellChange?.(actualRowIndex, col.name, editValue === '' ? null : editValue)
+                                }
+                                setEditingCell(null)
+                                // 触发保存
+                                onSave?.()
                               }
                             }}
                             onClick={(e) => e.stopPropagation()}
@@ -697,16 +1003,7 @@ const VirtualDataTable = memo(function VirtualDataTable({
             <button
               className="navi-context-item"
               onClick={async () => {
-                const cellKey = [...selectedCells][0]
-                if (cellKey) {
-                  const idx = cellKey.indexOf('-')
-                  const rowIndex = parseInt(cellKey.substring(0, idx))
-                  const colName = cellKey.substring(idx + 1)
-                  const value = data[rowIndex]?.[colName]
-                  if (value !== null && value !== undefined) {
-                    await navigator.clipboard.writeText(String(value))
-                  }
-                }
+                await copySelectedCells()
                 setContextMenu(null)
               }}
             >
@@ -720,10 +1017,7 @@ const VirtualDataTable = memo(function VirtualDataTable({
                 <button
                   className="navi-context-item"
                   onClick={async () => {
-                    if (contextMenu.col && selectedCells.size === 1) {
-                      const text = await navigator.clipboard.readText()
-                      onCellChange?.(contextMenu.row, contextMenu.col, text)
-                    }
+                    await pasteToSelectedCells()
                     setContextMenu(null)
                   }}
                 >
