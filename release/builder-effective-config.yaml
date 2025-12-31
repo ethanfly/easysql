@@ -1,0 +1,19 @@
+directories:
+  output: release
+  buildResources: build
+appId: com.easysql.app
+productName: EasySQL
+files:
+  - filter:
+      - dist/**/*
+      - electron/**/*
+win:
+  target: nsis
+  icon: public/icon.ico
+mac:
+  target: dmg
+  icon: public/icon.icns
+linux:
+  target: AppImage
+  icon: public/icon.png
+electronVersion: 33.4.11
