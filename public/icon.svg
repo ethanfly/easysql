@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0ea5e9"/>
+      <stop offset="50%" style="stop-color:#0284c7"/>
+      <stop offset="100%" style="stop-color:#0369a1"/>
+    </linearGradient>
+    <linearGradient id="dbGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffffff"/>
+      <stop offset="100%" style="stop-color:#e0f2fe"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="20" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+  
+  <!-- Background with rounded corners -->
+  <rect width="1024" height="1024" rx="200" fill="url(#bgGrad)"/>
+  
+  <!-- Database Icon -->
+  <g transform="translate(512, 480)" filter="url(#shadow)">
+    <!-- Top ellipse -->
+    <ellipse cx="0" cy="-180" rx="240" ry="80" fill="url(#dbGrad)"/>
+    
+    <!-- Body -->
+    <path d="M-240,-180 L-240,180 A240,80 0 0,0 240,180 L240,-180" fill="url(#dbGrad)"/>
+    
+    <!-- Bottom ellipse -->
+    <ellipse cx="0" cy="180" rx="240" ry="80" fill="#bae6fd"/>
+    
+    <!-- Middle stripes -->
+    <ellipse cx="0" cy="-30" rx="240" ry="80" fill="none" stroke="#7dd3fc" stroke-width="8"/>
+    <ellipse cx="0" cy="90" rx="240" ry="80" fill="none" stroke="#7dd3fc" stroke-width="8"/>
+    
+    <!-- Highlight on top -->
+    <ellipse cx="-60" cy="-200" rx="80" ry="25" fill="rgba(255,255,255,0.4)"/>
+  </g>
+  
+  <!-- SQL Text -->
+  <text x="512" y="920" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="140" font-weight="700" fill="#ffffff" letter-spacing="8">
+    SQL
+  </text>
+</svg>

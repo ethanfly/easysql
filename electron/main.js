@@ -30,6 +30,11 @@ async function initSqlite() {
 }
 
 function createWindow() {
+  // 图标路径（开发和生产环境不同）
+  const iconPath = process.env.NODE_ENV !== 'production'
+    ? path.join(__dirname, '../public/icon.png')
+    : path.join(__dirname, '../dist/icon.png')
+  
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -37,6 +42,7 @@ function createWindow() {
     minHeight: 700,
     frame: false,
     backgroundColor: '#1e1e1e',
+    icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
