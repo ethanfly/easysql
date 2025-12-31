@@ -660,7 +660,7 @@ function App() {
       <div className="h-6 bg-light-surface flex items-center px-3 text-xs border-t border-border-default text-text-tertiary">
         <span className={`w-2 h-2 rounded-full mr-2 ${connectedIds.size > 0 ? 'bg-success-500' : 'bg-text-disabled'}`} />
         <span>{connectedIds.size > 0 ? `${connectedIds.size} 个连接` : '未连接'}</span>
-        <span className="ml-auto font-mono text-text-muted">EasySQL v2.0</span>
+        <span className="ml-auto font-mono text-text-muted">EasySQL v{__APP_VERSION__}</span>
       </div>
 
       {/* 通知 */}

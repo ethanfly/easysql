@@ -19,7 +19,7 @@ const TitleBar = memo(function TitleBar() {
         </div>
         <span className="text-sm font-semibold text-text-primary">EasySQL</span>
         <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-primary-50 text-primary-600">
-          v2.0
+          v{__APP_VERSION__}
         </span>
       </div>
 
