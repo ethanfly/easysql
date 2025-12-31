@@ -3,10 +3,10 @@
 <div align="center">
 
 ![EasySQL](https://img.shields.io/badge/EasySQL-v2.0-06b6d4?style=for-the-badge)
-![Tauri](https://img.shields.io/badge/Tauri-2.0-ffc131?style=for-the-badge&logo=tauri)
+![Electron](https://img.shields.io/badge/Electron-33-47848f?style=for-the-badge&logo=electron)
 ![React](https://img.shields.io/badge/React-18-61dafb?style=for-the-badge&logo=react)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?style=for-the-badge&logo=typescript)
-![Rust](https://img.shields.io/badge/Rust-orange?style=for-the-badge&logo=rust)
+![Node.js](https://img.shields.io/badge/Node.js-18+-339933?style=for-the-badge&logo=node.js)
 
 **现代化多数据库管理工具**
 
@@ -18,36 +18,35 @@
 
 ## ✨ 特性
 
-- 🚀 **超轻量** - 基于 Tauri 2.0 + Rust，安装包仅 ~10MB
-- ⚡ **高性能** - Rust 原生数据库驱动，毫秒级响应
-- 🎨 **精美 UI** - Windows Metro 风格，深色主题
-- 🔌 **多数据库** - 支持 MySQL、PostgreSQL、SQLite、SQL Server 等
-- 🔐 **SSH 隧道** - 安全连接远程数据库
-- 📝 **智能编辑器** - SQL 语法高亮、智能补全、代码片段
-- 📊 **数据编辑** - 支持直接编辑表格数据
-- 📤 **导入导出** - 支持 JSON、Navicat NCX 格式
+- 🚀 **跨平台** - 基于 Electron，支持 Windows、macOS、Linux
+- ⚡ **高性能** - 原生数据库驱动，毫秒级响应
+- 🎨 **精美 UI** - Windows Metro 风格，深色主题，无边框窗口
+- 🔌 **多数据库** - 支持 MySQL、PostgreSQL、SQLite、SQL Server、MongoDB、Redis、MariaDB
+- 📝 **智能编辑器** - Monaco Editor，SQL 语法高亮、智能补全
+- 📊 **数据编辑** - 支持直接编辑表格数据，虚拟滚动大数据量
+- 🛠️ **表设计器** - Navicat 风格，可视化编辑字段、索引、外键、表选项
+- 🗃️ **完整管理** - 创建/删除/重命名/复制数据库和表
+- 📤 **导入导出** - 支持 JSON、Navicat NCX 格式连接配置导入导出
+- 🔄 **批量操作** - 支持多选连接批量删除管理
 
 ## 🗃️ 支持的数据库
 
-| 数据库 | 状态 | 说明 |
+| 数据库 | 状态 | 驱动 |
 |--------|------|------|
-| 🐬 MySQL | ✅ | 完全支持 |
-| 🐘 PostgreSQL | ✅ | 完全支持 |
-| 💾 SQLite | ✅ | 完全支持 |
-| 📊 SQL Server | ✅ | 完全支持 |
-| 🦭 MariaDB | ✅ | 完全支持 |
-| 🍃 MongoDB | 🔜 | 开发中 |
-| ⚡ Redis | 🔜 | 开发中 |
-| 🔶 Oracle | 🔜 | 计划中 |
-| ❄️ Snowflake | 🔜 | 计划中 |
+| 🐬 MySQL | ✅ | mysql2 |
+| 🐘 PostgreSQL | ✅ | pg |
+| 💾 SQLite | ✅ | sql.js |
+| 📊 SQL Server | ✅ | mssql |
+| 🦭 MariaDB | ✅ | mysql2 |
+| 🍃 MongoDB | ✅ | mongodb |
+| ⚡ Redis | ✅ | ioredis |
 
 ## 🚀 快速开始
 
 ### 环境要求
 
 - Node.js 18+
-- Rust (rustup)
-- [Tauri 依赖](https://tauri.app/v1/guides/getting-started/prerequisites)
+- npm 或 yarn
 
 ### 安装
 
@@ -60,10 +59,10 @@ cd easysql
 npm install
 
 # 开发模式运行
-npm run tauri:dev
+npm run electron:dev
 
 # 构建应用
-npm run tauri:build
+npm run electron:build
 ```
 
 ## 📸 界面预览
@@ -92,36 +91,35 @@ npm run tauri:build
 
 ## 🛠️ 技术栈
 
-- **运行时**: Tauri 2.0 (Rust + WebView)
-- **后端**: Rust + SQLx + Tiberius
+- **运行时**: Electron 33
 - **前端**: React 18 + TypeScript 5
 - **样式**: Tailwind CSS 3
 - **构建**: Vite 5
 - **编辑器**: Monaco Editor
+- **数据库驱动**: mysql2, pg, sql.js, mssql, mongodb, ioredis
 
 ## 📁 项目结构
 
 ```
 easysql/
-├── src-tauri/          # Tauri/Rust 后端
-│   ├── src/
-│   │   ├── main.rs     # 主程序入口
-│   │   ├── commands.rs # Tauri 命令
-│   │   ├── database.rs # 数据库连接管理
-│   │   ├── config.rs   # 配置管理
-│   │   └── ssh.rs      # SSH 隧道
-│   ├── Cargo.toml
-│   └── tauri.conf.json
-├── src/                # React 前端
-│   ├── components/     # UI 组件
-│   │   ├── TitleBar.tsx
-│   │   ├── Sidebar.tsx
-│   │   ├── MainContent.tsx
-│   │   ├── SqlEditor.tsx
-│   │   └── ConnectionModal.tsx
+├── electron/              # Electron 主进程
+│   ├── main.js            # 主程序入口
+│   └── preload.js         # 预加载脚本
+├── src/                   # React 前端
+│   ├── components/        # UI 组件
+│   │   ├── TitleBar.tsx          # 标题栏
+│   │   ├── Sidebar.tsx           # 侧边栏（连接/数据库/表树）
+│   │   ├── MainContent.tsx       # 主内容区
+│   │   ├── SqlEditor.tsx         # SQL 编辑器（Monaco）
+│   │   ├── VirtualDataTable.tsx  # 虚拟滚动数据表格
+│   │   ├── TableDesigner.tsx     # 表设计器（Navicat 风格）
+│   │   ├── ConnectionModal.tsx   # 连接配置弹窗
+│   │   ├── CreateDatabaseModal.tsx  # 新建数据库弹窗
+│   │   ├── CreateTableModal.tsx  # 快速新建表弹窗
+│   │   └── InputDialog.tsx       # 通用输入对话框
 │   ├── lib/
-│   │   ├── tauri-api.ts # Tauri API 封装
-│   │   └── hooks.ts     # 自定义 Hooks
+│   │   ├── electron-api.ts    # Electron API 封装
+│   │   └── hooks.ts           # 自定义 Hooks
 │   ├── App.tsx
 │   ├── types.ts
 │   └── index.css
@@ -143,6 +141,8 @@ easysql/
 | `Ctrl+Q` | 新建查询 |
 | `Ctrl+W` | 关闭当前标签 |
 | `Ctrl+F` | 搜索（侧边栏/表格） |
+| `双击连接` | 快速连接数据库 |
+| `右键菜单` | 连接/数据库/表操作 |
 
 ## 🔧 配置说明
 
@@ -150,6 +150,15 @@ easysql/
 - Windows: `%APPDATA%\easysql\connections.json`
 - macOS: `~/Library/Application Support/easysql/connections.json`
 - Linux: `~/.config/easysql/connections.json`
+
+## 📦 npm 脚本
+
+| 命令 | 说明 |
+|------|------|
+| `npm run dev` | 启动 Vite 开发服务器 |
+| `npm run build` | 构建前端资源 |
+| `npm run electron:dev` | 开发模式运行 Electron |
+| `npm run electron:build` | 打包 Electron 应用 |
 
 ## 🤝 贡献
 
@@ -162,5 +171,5 @@ MIT
 ---
 
 <div align="center">
-Made with ❤️ using Tauri + React + Rust
+Made with ❤️ using Electron + React + Node.js
 </div>

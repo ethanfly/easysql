@@ -2,7 +2,7 @@ import { X, Play, Plus, Table2, ChevronLeft, ChevronRight, FolderOpen, Save, Ali
 import { QueryTab, DB_INFO, DatabaseType, TableInfo, ColumnInfo, TableTab } from '../types'
 import { useState, useRef, useEffect, useCallback, memo, Suspense, lazy } from 'react'
 import { format } from 'sql-formatter'
-import api from '../lib/tauri-api'
+import api from '../lib/electron-api'
 import VirtualDataTable from './VirtualDataTable'
 
 // 懒加载 Monaco Editor 以提升首次加载性能
@@ -33,12 +33,15 @@ interface Props {
   onUpdateSql: (id: string, sql: string) => void
   onUpdateTabTitle: (id: string, title: string) => void
   onLoadTablePage: (id: string, page: number) => void
+  onChangeTablePageSize?: (id: string, pageSize: number) => void
   onNewConnectionWithType?: (type: DatabaseType) => void
   onUpdateTableCell?: (tabId: string, rowIndex: number, colName: string, value: any) => void
   onDeleteTableRow?: (tabId: string, rowIndex: number) => void
   onDeleteTableRows?: (tabId: string, rowIndices: number[]) => void
   onSaveTableChanges?: (tabId: string) => Promise<void>
   onDiscardTableChanges?: (tabId: string) => void
+  onRefreshTable?: (tabId: string) => void
+  loadingTables?: Set<string>  // 正在加载的表标签ID
 }
 
 // 主内容组件
@@ -55,12 +58,15 @@ const MainContent = memo(function MainContent({
   onUpdateSql,
   onUpdateTabTitle,
   onLoadTablePage,
+  onChangeTablePageSize,
   onNewConnectionWithType,
   onUpdateTableCell,
   onDeleteTableRow,
   onDeleteTableRows,
   onSaveTableChanges,
   onDiscardTableChanges,
+  onRefreshTable,
+  loadingTables,
 }: Props) {
   // 快捷键处理
   useEffect(() => {
@@ -156,12 +162,15 @@ const MainContent = memo(function MainContent({
           'tableName' in currentTab ? (
             <TableViewer 
               tab={currentTab as any} 
+              isLoading={loadingTables?.has(currentTab.id)}
               onLoadPage={(page) => onLoadTablePage(currentTab.id, page)}
+              onChangePageSize={(pageSize) => onChangeTablePageSize?.(currentTab.id, pageSize)}
               onCellChange={(rowIndex, colName, value) => onUpdateTableCell?.(currentTab.id, rowIndex, colName, value)}
               onDeleteRow={(rowIndex) => onDeleteTableRow?.(currentTab.id, rowIndex)}
               onDeleteRows={(rowIndices) => onDeleteTableRows?.(currentTab.id, rowIndices)}
               onSave={() => onSaveTableChanges?.(currentTab.id)}
               onDiscard={() => onDiscardTableChanges?.(currentTab.id)}
+              onRefresh={() => onRefreshTable?.(currentTab.id)}
             />
           ) : (
             <QueryEditor
@@ -269,20 +278,26 @@ const WelcomeScreen = memo(function WelcomeScreen({
 // 表格查看器组件
 const TableViewer = memo(function TableViewer({ 
   tab, 
+  isLoading,
   onLoadPage, 
+  onChangePageSize,
   onCellChange, 
   onDeleteRow, 
   onDeleteRows, 
   onSave, 
-  onDiscard 
+  onDiscard,
+  onRefresh
 }: { 
   tab: TableTab & { pendingChanges?: Map<string, any>; deletedRows?: Set<number> }
+  isLoading?: boolean
   onLoadPage: (page: number) => void
+  onChangePageSize?: (pageSize: number) => void
   onCellChange?: (rowIndex: number, colName: string, value: any) => void
   onDeleteRow?: (rowIndex: number) => void
   onDeleteRows?: (rowIndices: number[]) => void
   onSave?: () => void
   onDiscard?: () => void
+  onRefresh?: () => void
 }) {
   const totalPages = Math.ceil(tab.total / tab.pageSize)
   const hasChanges = (tab.pendingChanges?.size || 0) > 0 || (tab.deletedRows?.size || 0) > 0
@@ -303,65 +318,91 @@ const TableViewer = memo(function TableViewer({
   
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* 表信息栏 */}
-      <div className="h-12 bg-metro-bg flex items-center px-4 gap-4 border-b border-metro-border/50" style={{ flexShrink: 0 }}>
-        <div className="flex items-center gap-3">
-          <Table2 size={18} className="text-accent-orange" />
-          <span className="font-semibold text-white">{tab.tableName}</span>
-          <span className="text-text-tertiary text-sm">({tab.total.toLocaleString()} 行)</span>
+      {/* 表信息栏 - 紧凑布局 */}
+      <div className="bg-metro-bg border-b border-metro-border/50 flex items-center justify-between px-3 gap-2" style={{ flexShrink: 0, height: 36 }}>
+        {/* 左侧：表名 */}
+        <div className="flex items-center gap-2 min-w-0">
+          <Table2 size={16} className="text-accent-orange flex-shrink-0" />
+          <span className="font-medium text-white text-sm truncate">{tab.tableName}</span>
+          <span className="text-text-tertiary text-xs flex-shrink-0">({tab.total.toLocaleString()}行)</span>
+          {isLoading && (
+            <div className="flex items-center gap-1.5 text-accent-blue text-xs flex-shrink-0">
+              <Loader2 size={12} className="animate-spin" />
+              加载中...
+            </div>
+          )}
         </div>
         
-        {hasChanges ? (
-          <div className="flex items-center gap-3 ml-4">
-            <span className="text-xs text-accent-orange font-medium px-2 py-1 bg-accent-orange/10 rounded">
-              {(tab.pendingChanges?.size || 0) + (tab.deletedRows?.size || 0)} 项修改
+        {/* 中间：修改提示和按钮 */}
+        {hasChanges && (
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <span className="text-xs text-accent-orange font-medium px-1.5 py-0.5 bg-accent-orange/10 rounded">
+              {(tab.pendingChanges?.size || 0) + (tab.deletedRows?.size || 0)}项
             </span>
             <button
               onClick={onSave}
-              className="h-8 px-4 bg-accent-green hover:bg-accent-green-hover flex items-center gap-2 text-sm font-medium transition-all shadow-metro"
+              className="h-6 px-2 bg-accent-green hover:bg-accent-green-hover flex items-center gap-1 text-xs font-medium transition-all"
               title="保存修改 (Ctrl+S)"
             >
-              <Save size={14} />
+              <Save size={11} />
               保存
             </button>
             <button
               onClick={onDiscard}
-              className="h-8 px-4 bg-metro-surface hover:bg-metro-hover flex items-center gap-2 text-sm transition-all border border-metro-border"
+              className="h-6 px-2 bg-metro-surface hover:bg-metro-hover flex items-center gap-1 text-xs transition-all border border-metro-border"
             >
-              <RotateCcw size={14} />
+              <RotateCcw size={11} />
               放弃
             </button>
           </div>
-        ) : (
-          <span className="text-xs text-text-disabled ml-4">
-            双击单元格编辑 · Ctrl+F 搜索 · 右键更多操作
-          </span>
         )}
         
-        {/* 分页 */}
-        <div className="flex items-center gap-2 ml-auto">
+        {/* 右侧：分页控件 - 固定宽度 */}
+        <div className="flex items-center gap-1 flex-shrink-0">
           <button
             onClick={() => onLoadPage(tab.page - 1)}
-            disabled={tab.page <= 1}
-            className="p-1 hover:bg-metro-hover disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            disabled={tab.page <= 1 || isLoading}
+            className="p-0.5 hover:bg-metro-hover disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <ChevronLeft size={16} />
           </button>
-          <span className="text-sm">
-            第 <span className="text-accent-blue font-medium">{tab.page}</span> / {totalPages} 页
+          <span className="text-xs whitespace-nowrap min-w-[70px] text-center">
+            <span className="text-accent-blue font-medium">{tab.page}</span>/{totalPages}页
           </span>
           <button
             onClick={() => onLoadPage(tab.page + 1)}
-            disabled={tab.page >= totalPages}
-            className="p-1 hover:bg-metro-hover disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            disabled={tab.page >= totalPages || isLoading}
+            className="p-0.5 hover:bg-metro-hover disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <ChevronRight size={16} />
           </button>
+          <select
+            value={tab.pageSize}
+            onChange={(e) => onChangePageSize?.(parseInt(e.target.value))}
+            disabled={isLoading}
+            className="h-6 px-1 text-xs bg-metro-surface border border-metro-border text-white rounded cursor-pointer hover:border-text-tertiary focus:border-accent-blue outline-none disabled:opacity-50"
+            title="每页条数"
+          >
+            <option value={100}>100</option>
+            <option value={500}>500</option>
+            <option value={1000}>1000</option>
+            <option value={2000}>2000</option>
+            <option value={5000}>5000</option>
+          </select>
         </div>
       </div>
 
       {/* 数据表格 - 使用虚拟滚动 */}
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+        {/* Loading 遮罩 */}
+        {isLoading && (
+          <div className="absolute inset-0 bg-metro-dark/80 flex items-center justify-center z-50">
+            <div className="flex flex-col items-center gap-3">
+              <Loader2 size={32} className="animate-spin text-accent-blue" />
+              <span className="text-sm text-text-secondary">加载数据中...</span>
+            </div>
+          </div>
+        )}
         <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
           <VirtualDataTable 
             columns={tab.columns} 
@@ -382,6 +423,7 @@ const TableViewer = memo(function TableViewer({
               const originalIndices = visibleRowIndices.map(i => originalIndexMap[i])
               onDeleteRows?.(originalIndices)
             }}
+            onRefresh={onRefresh}
           />
         </div>
       </div>
@@ -460,10 +502,10 @@ const QueryEditor = memo(function QueryEditor({
   const handleExportCsv = useCallback(async () => {
     if (!tab.results || tab.results.rows.length === 0) return
     
-    const { save } = await import('@tauri-apps/plugin-dialog')
-    const { writeTextFile } = await import('@tauri-apps/plugin-fs')
+    const electronAPI = (window as any).electronAPI
+    if (!electronAPI) return
     
-    const path = await save({
+    const path = await electronAPI.saveDialog({
       filters: [{ name: 'CSV', extensions: ['csv'] }],
       defaultPath: `query_results_${Date.now()}.csv`
     })
@@ -479,16 +521,16 @@ const QueryEditor = memo(function QueryEditor({
       }).join(',')
     ).join('\n')
     
-    await writeTextFile(path, `${header}\n${rows}`)
+    await electronAPI.writeFile(path, `${header}\n${rows}`)
   }, [tab.results])
 
   const handleExportSql = useCallback(async () => {
     if (!tab.results || tab.results.rows.length === 0) return
     
-    const { save } = await import('@tauri-apps/plugin-dialog')
-    const { writeTextFile } = await import('@tauri-apps/plugin-fs')
+    const electronAPI = (window as any).electronAPI
+    if (!electronAPI) return
     
-    const path = await save({
+    const path = await electronAPI.saveDialog({
       filters: [{ name: 'SQL', extensions: ['sql'] }],
       defaultPath: `query_results_${Date.now()}.sql`
     })
@@ -510,7 +552,7 @@ const QueryEditor = memo(function QueryEditor({
       sqlContent += `INSERT INTO \`${tableName}\` (\`${columnNames.join('`, `')}\`) VALUES (${values});\n`
     })
     
-    await writeTextFile(path, sqlContent)
+    await electronAPI.writeFile(path, sqlContent)
   }, [tab.results])
 
   // 结果数据转换为表格格式
@@ -649,6 +691,7 @@ const QueryEditor = memo(function QueryEditor({
                 columns={resultColumns}
                 data={resultData}
                 showColumnInfo={true}
+                onRefresh={() => onRun(sql)}
               />
             ) : (
               <div className="h-full flex items-center justify-center text-white/30">

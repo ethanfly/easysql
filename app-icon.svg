@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6366f1"/>
+      <stop offset="100%" style="stop-color:#4f46e5"/>
+    </linearGradient>
+    <linearGradient id="db" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffffff"/>
+      <stop offset="100%" style="stop-color:#e0e7ff"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="1024" height="1024" rx="180" fill="url(#bg)"/>
+  
+  <!-- Database Icon -->
+  <g transform="translate(512, 512)">
+    <!-- Database cylinder -->
+    <ellipse cx="0" cy="-200" rx="220" ry="70" fill="url(#db)" stroke="#c7d2fe" stroke-width="8"/>
+    <rect x="-220" y="-200" width="440" height="400" fill="url(#db)"/>
+    <ellipse cx="0" cy="200" rx="220" ry="70" fill="url(#db)" stroke="#c7d2fe" stroke-width="8"/>
+    
+    <!-- Middle lines -->
+    <ellipse cx="0" cy="-50" rx="220" ry="70" fill="none" stroke="#a5b4fc" stroke-width="6"/>
+    <ellipse cx="0" cy="100" rx="220" ry="70" fill="none" stroke="#a5b4fc" stroke-width="6"/>
+    
+    <!-- Side borders -->
+    <line x1="-220" y1="-200" x2="-220" y2="200" stroke="#c7d2fe" stroke-width="8"/>
+    <line x1="220" y1="-200" x2="220" y2="200" stroke="#c7d2fe" stroke-width="8"/>
+    
+    <!-- SQL text -->
+    <text x="0" y="350" text-anchor="middle" font-family="Arial, sans-serif" font-size="120" font-weight="bold" fill="#ffffff">SQL</text>
+  </g>
+</svg>
+

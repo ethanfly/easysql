@@ -1,6 +1,6 @@
 import { Minus, Square, X, Database, Copy } from 'lucide-react'
 import { memo, useState } from 'react'
-import api from '../lib/tauri-api'
+import api from '../lib/electron-api'
 
 const TitleBar = memo(function TitleBar() {
   const [isMaximized, setIsMaximized] = useState(false)

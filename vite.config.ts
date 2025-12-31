@@ -9,17 +9,16 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src')
     }
   },
-  // Tauri 配置
-  clearScreen: false,
   server: {
     port: 5173,
     strictPort: true,
   },
-  envPrefix: ['VITE_', 'TAURI_'],
   build: {
     outDir: 'dist',
-    target: process.env.TAURI_PLATFORM === 'windows' ? 'chrome105' : 'safari13',
-    minify: !process.env.TAURI_DEBUG ? 'esbuild' : false,
-    sourcemap: !!process.env.TAURI_DEBUG,
-  }
+    target: 'chrome105',
+    minify: 'esbuild',
+    sourcemap: false,
+  },
+  // Electron 需要的配置
+  base: './'
 })

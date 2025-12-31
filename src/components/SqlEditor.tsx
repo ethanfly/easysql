@@ -162,23 +162,30 @@ const SQL_TYPES = [
 
 // 分析 SQL 上下文
 function analyzeSqlContext(textBeforeCursor: string): {
-  context: 'select_columns' | 'from_table' | 'where_condition' | 'join_table' | 'on_condition' | 'order_by' | 'group_by' | 'insert_table' | 'update_table' | 'set_column' | 'general',
+  context: 'select_columns' | 'from_table' | 'where_condition' | 'join_table' | 'on_condition' | 'order_by' | 'group_by' | 'insert_table' | 'update_table' | 'set_column' | 'values' | 'into_columns' | 'general',
   tableAlias: Map<string, string>, // 别名 -> 表名
   currentTable: string | null, // 当前正在输入的表名（用于 table. 场景）
+  referencedTables: string[], // 已引用的表名
+  lastWord: string, // 最后一个单词
 } {
   const text = textBeforeCursor.toUpperCase()
   const tableAlias = new Map<string, string>()
   let currentTable: string | null = null
+  const referencedTables: string[] = []
   
-  // 提取表别名 (FROM table AS alias 或 FROM table alias 或 JOIN table alias)
-  const aliasRegex = /(?:FROM|JOIN)\s+[`\[\"]?(\w+)[`\]\"]?\s+(?:AS\s+)?([A-Z]\w*)/gi
+  // 提取表别名和引用的表 (FROM table AS alias 或 FROM table alias 或 JOIN table alias)
+  const aliasRegex = /(?:FROM|JOIN|UPDATE)\s+[`\[\"]?(\w+)[`\]\"]?(?:\s+(?:AS\s+)?([A-Z]\w*))?/gi
   let match
   while ((match = aliasRegex.exec(textBeforeCursor)) !== null) {
-    tableAlias.set(match[2].toLowerCase(), match[1].toLowerCase())
+    const tableName = match[1].toLowerCase()
+    referencedTables.push(tableName)
+    if (match[2]) {
+      tableAlias.set(match[2].toLowerCase(), tableName)
+    }
   }
   
-  // 检查是否在 table. 后面
-  const dotMatch = textBeforeCursor.match(/[`\[\"]?(\w+)[`\]\"]?\.\s*$/i)
+  // 检查是否在 table. 后面（包括正在输入的情况 table.col）
+  const dotMatch = textBeforeCursor.match(/[`\[\"]?(\w+)[`\]\"]?\.(\w*)$/i)
   if (dotMatch) {
     currentTable = dotMatch[1].toLowerCase()
     // 检查是否是别名
@@ -187,49 +194,136 @@ function analyzeSqlContext(textBeforeCursor: string): {
     }
   }
   
+  // 获取最后一个单词
+  const lastWordMatch = textBeforeCursor.match(/(\w+)\s*$/i)
+  const lastWord = lastWordMatch ? lastWordMatch[1].toUpperCase() : ''
+  
   // 判断上下文
   let context: ReturnType<typeof analyzeSqlContext>['context'] = 'general'
   
-  // 检查最近的关键字
-  const lastKeywordMatch = text.match(/(SELECT|FROM|WHERE|JOIN|ON|ORDER\s+BY|GROUP\s+BY|SET|INSERT\s+INTO|UPDATE|HAVING)\s*[^A-Z]*$/i)
-  if (lastKeywordMatch) {
-    const keyword = lastKeywordMatch[1].replace(/\s+/g, ' ')
-    switch (keyword) {
-      case 'SELECT':
-        context = 'select_columns'
-        break
-      case 'FROM':
-        context = 'from_table'
-        break
-      case 'WHERE':
-      case 'HAVING':
-        context = 'where_condition'
-        break
-      case 'JOIN':
-        context = 'join_table'
-        break
-      case 'ON':
-        context = 'on_condition'
-        break
-      case 'ORDER BY':
-        context = 'order_by'
-        break
-      case 'GROUP BY':
-        context = 'group_by'
-        break
-      case 'INSERT INTO':
-        context = 'insert_table'
-        break
-      case 'UPDATE':
-        context = 'update_table'
-        break
-      case 'SET':
-        context = 'set_column'
-        break
+  // 检查是否在括号内（INSERT INTO table (columns) 的情况）
+  const lastOpenParen = textBeforeCursor.lastIndexOf('(')
+  const lastCloseParen = textBeforeCursor.lastIndexOf(')')
+  const inParentheses = lastOpenParen > lastCloseParen
+  
+  // 检查 INSERT INTO table ( 后面的上下文
+  if (inParentheses) {
+    const beforeParen = textBeforeCursor.substring(0, lastOpenParen)
+    if (/INSERT\s+INTO\s+\w+\s*$/i.test(beforeParen)) {
+      context = 'into_columns'
+      return { context, tableAlias, currentTable, referencedTables, lastWord }
+    } else if (/VALUES\s*$/i.test(beforeParen)) {
+      context = 'values'
+      return { context, tableAlias, currentTable, referencedTables, lastWord }
     }
   }
   
-  return { context, tableAlias, currentTable }
+  // 找出最后一个关键字的位置，确定当前处于哪个子句中
+  const keywordPositions: { keyword: string; index: number }[] = []
+  const keywords = [
+    'SELECT', 'FROM', 'WHERE', 'JOIN', 'INNER JOIN', 'LEFT JOIN', 'RIGHT JOIN', 
+    'FULL JOIN', 'CROSS JOIN', 'ON', 'AND', 'OR', 'ORDER BY', 'GROUP BY', 
+    'HAVING', 'INSERT INTO', 'UPDATE', 'SET', 'VALUES', 'LIMIT', 'OFFSET'
+  ]
+  
+  for (const kw of keywords) {
+    // 使用更精确的匹配，确保是独立的关键字
+    const regex = new RegExp(`\\b${kw}\\b`, 'gi')
+    let m
+    while ((m = regex.exec(text)) !== null) {
+      keywordPositions.push({ keyword: kw, index: m.index })
+    }
+  }
+  
+  // 按位置排序，找到最后一个关键字
+  keywordPositions.sort((a, b) => b.index - a.index)
+  
+  if (keywordPositions.length > 0) {
+    const lastKeyword = keywordPositions[0].keyword
+    const afterKeyword = text.substring(keywordPositions[0].index + lastKeyword.length)
+    
+    // 检查关键字后面是否有其他关键字（排除当前正在分析的关键字）
+    const hasSubsequentKeyword = keywordPositions.length > 1 && 
+      ['FROM', 'WHERE', 'JOIN', 'ORDER BY', 'GROUP BY', 'HAVING', 'LIMIT'].some(k => 
+        text.indexOf(k, keywordPositions[0].index + lastKeyword.length) > -1
+      )
+    
+    switch (lastKeyword) {
+      case 'SELECT':
+        // SELECT 后面，如果还没有 FROM，提示字段
+        if (!text.includes('FROM')) {
+          context = 'select_columns'
+        } else {
+          context = 'general'
+        }
+        break
+        
+      case 'FROM':
+      case 'INSERT INTO':
+        // FROM 或 INSERT INTO 后面，提示表名
+        // 检查是否已经输入了表名（有空格分隔的后续内容且不是继续输入表名）
+        if (/^\s+\w+\s+/i.test(afterKeyword)) {
+          // 已经输入了完整的表名，不再提示
+          context = 'general'
+        } else {
+          context = lastKeyword === 'FROM' ? 'from_table' : 'insert_table'
+        }
+        break
+        
+      case 'UPDATE':
+        if (/^\s+\w+\s+/i.test(afterKeyword)) {
+          context = 'general'
+        } else {
+          context = 'update_table'
+        }
+        break
+        
+      case 'INNER JOIN':
+      case 'LEFT JOIN':
+      case 'RIGHT JOIN':
+      case 'FULL JOIN':
+      case 'CROSS JOIN':
+      case 'JOIN':
+        if (/^\s+\w+\s+/i.test(afterKeyword)) {
+          context = 'general'
+        } else {
+          context = 'join_table'
+        }
+        break
+        
+      case 'ON':
+        context = 'on_condition'
+        break
+        
+      case 'WHERE':
+      case 'AND':
+      case 'OR':
+      case 'HAVING':
+        context = 'where_condition'
+        break
+        
+      case 'ORDER BY':
+        context = 'order_by'
+        break
+        
+      case 'GROUP BY':
+        context = 'group_by'
+        break
+        
+      case 'SET':
+        context = 'set_column'
+        break
+        
+      case 'VALUES':
+        context = 'values'
+        break
+        
+      default:
+        context = 'general'
+    }
+  }
+  
+  return { context, tableAlias, currentTable, referencedTables, lastWord }
 }
 
 export default function SqlEditor({ value, onChange, onRun, onSave, onOpen, onFormat, databases, tables, columns }: Props) {
@@ -275,7 +369,7 @@ export default function SqlEditor({ value, onChange, onRun, onSave, onOpen, onFo
           endColumn: position.column,
         })
         
-        const { context, tableAlias, currentTable } = analyzeSqlContext(textBeforeCursor)
+        const { context, tableAlias, currentTable, referencedTables } = analyzeSqlContext(textBeforeCursor)
 
         // 获取最新的数据
         const { databases: dbs, tables: tbls, columns: cols } = dataRef.current
@@ -289,14 +383,24 @@ export default function SqlEditor({ value, onChange, onRun, onSave, onOpen, onFo
             [...cols.entries()].find(([name]) => name.toLowerCase() === currentTable)?.[1]
           
           if (tableColumns) {
-            tableColumns.forEach(col => {
-              const comment = col.comment ? ` - ${col.comment}` : ''
+            // 添加 * 选项在最前
+            suggestions.push({
+              label: '*',
+              kind: monacoInstance.languages.CompletionItemKind.Constant,
+              insertText: '*',
+              range,
+              detail: '所有字段',
+              sortText: '!0',
+            })
+            
+            tableColumns.forEach((col, idx) => {
+              const isPK = col.key === 'PRI'
               suggestions.push({
                 label: col.name,
                 kind: monacoInstance.languages.CompletionItemKind.Field,
                 insertText: col.name,
                 range,
-                detail: `📌 ${col.type}${col.key === 'PRI' ? ' 🔑' : ''}`,
+                detail: `${col.type}${isPK ? ' 🔑' : ''}${col.comment ? ' · ' + col.comment : ''}`,
                 documentation: {
                   value: `**${currentTable}.${col.name}**\n\n` +
                     `- 类型: \`${col.type}\`\n` +
@@ -304,20 +408,24 @@ export default function SqlEditor({ value, onChange, onRun, onSave, onOpen, onFo
                     (col.key ? `- 键: ${col.key}\n` : '') +
                     (col.comment ? `- 备注: ${col.comment}` : '')
                 },
-                sortText: '0' + col.name,
+                sortText: '!1' + (isPK ? '0' : '1') + String(idx).padStart(3, '0'),
               })
-            })
-            // 添加 * 选项
-            suggestions.push({
-              label: '*',
-              kind: monacoInstance.languages.CompletionItemKind.Constant,
-              insertText: '*',
-              range,
-              detail: '所有字段',
-              sortText: '00',
             })
           }
           return { suggestions }
+        }
+        
+        // 获取当前语句中引用的表的列
+        const getReferencedTableColumns = () => {
+          const result: Array<{ tableName: string; col: ColumnInfo }> = []
+          for (const tableName of referencedTables) {
+            const tableColumns = cols.get(tableName) || 
+              [...cols.entries()].find(([name]) => name.toLowerCase() === tableName)?.[1]
+            if (tableColumns) {
+              tableColumns.forEach(col => result.push({ tableName, col }))
+            }
+          }
+          return result
         }
 
         // 根据上下文提供不同的建议
@@ -417,63 +525,100 @@ export default function SqlEditor({ value, onChange, onRun, onSave, onOpen, onFo
           })
         }
 
+        // 添加当前引用表的字段（优先显示）
+        const addReferencedColumns = (priority: string = '0') => {
+          const refCols = getReferencedTableColumns()
+          if (refCols.length > 0) {
+            refCols.forEach(({ tableName, col }, idx) => {
+              const isPK = col.key === 'PRI'
+              const label = referencedTables.length > 1 ? `${tableName}.${col.name}` : col.name
+              suggestions.push({
+                label,
+                kind: monacoInstance.languages.CompletionItemKind.Field,
+                insertText: label,
+                range,
+                detail: `${col.type}${isPK ? ' 🔑' : ''}${col.comment ? ' · ' + col.comment : ''}`,
+                documentation: {
+                  value: `**${tableName}.${col.name}**\n\n` +
+                    `- 类型: \`${col.type}\`\n` +
+                    `- 可空: ${col.nullable ? '✅ 是' : '❌ 否'}\n` +
+                    (col.key ? `- 键: ${col.key}\n` : '') +
+                    (col.comment ? `- 备注: ${col.comment}` : '')
+                },
+                sortText: priority + (isPK ? '0' : '1') + String(idx).padStart(4, '0'),
+              })
+            })
+          }
+        }
+
         // 根据上下文添加建议
         switch (context) {
           case 'select_columns':
-            // SELECT 后优先提示字段、聚合函数、*
+            // SELECT 后优先提示：* -> 当前表字段 -> 聚合函数 -> 其他表字段
             suggestions.push({
               label: '*',
               kind: monacoInstance.languages.CompletionItemKind.Constant,
               insertText: '*',
               range,
               detail: '所有字段',
-              sortText: '00',
+              sortText: '!00',
             })
-            addColumns('0', true)
-            addFunctions(['aggregate', 'string', 'datetime', 'conditional', 'window'], '1')
-            addTables('3')
-            addKeywords('4')
-            break
+            addReferencedColumns('!1')  // 优先显示当前引用表的字段
+            addFunctions(['aggregate', 'window'], '!2')  // 聚合和窗口函数次之
+            addColumns('2', false)  // 其他表字段（不带表名前缀，更简洁）
+            addFunctions(['string', 'datetime', 'conditional'], '3')
+            return { suggestions }  // 直接返回
             
           case 'from_table':
           case 'join_table':
           case 'insert_table':
           case 'update_table':
-            // FROM/JOIN/INSERT/UPDATE 后优先提示表名
-            addTables('0')
+            // FROM/JOIN/INSERT/UPDATE 后 只 提示表名和数据库，直接返回
+            addTables('!0')  // 表名最优先
             addDatabases('1')
-            addKeywords('4')
-            break
+            return { suggestions }  // 直接返回，不添加代码片段
             
           case 'where_condition':
           case 'on_condition':
-            // WHERE/ON 后优先提示字段、比较运算符
-            addColumns('0', true)
-            addFunctions(['conditional', 'string', 'datetime'], '2')
-            addKeywords('3')
-            break
+            // WHERE/ON 后优先提示当前表字段
+            addReferencedColumns('!0')  // 当前引用表字段最优先
+            addColumns('2', false)  // 其他表字段
+            addFunctions(['conditional', 'string', 'datetime'], '3')
+            addKeywords('8')
+            return { suggestions }
             
           case 'order_by':
           case 'group_by':
-            // ORDER BY/GROUP BY 后优先提示字段
-            addColumns('0', true)
-            addFunctions(['aggregate'], '2')
-            addKeywords('3')
-            break
+            // ORDER BY/GROUP BY 后优先提示当前表字段
+            addReferencedColumns('!0')
+            addColumns('2', false)
+            if (context === 'group_by') {
+              addFunctions(['aggregate'], '3')
+            }
+            return { suggestions }
             
           case 'set_column':
-            // SET 后优先提示字段
-            addColumns('0', false)
-            addFunctions(['conditional', 'string', 'datetime'], '2')
-            break
+          case 'into_columns':
+            // SET/INSERT (columns) 后只提示当前表字段
+            addReferencedColumns('!0')
+            if (context === 'set_column') {
+              addFunctions(['conditional', 'string', 'datetime', 'numeric'], '2')
+            }
+            return { suggestions }
+            
+          case 'values':
+            // VALUES 后提示函数和关键字
+            addFunctions(['datetime', 'string', 'conditional'], '!0')
+            addKeywords('2')
+            return { suggestions }
             
           default:
-            // 通用情况
-            addKeywords('3')
-            addFunctions(undefined, '4')
+            // 通用情况 - 关键字优先
+            addKeywords('!0')
             addTables('1')
             addColumns('2', true)
-            addDatabases('0')
+            addFunctions(undefined, '3')
+            addDatabases('4')
         }
 
         // 数据类型

@@ -47,6 +47,7 @@ export interface TableTab {
   type: 'table'
   tableName: string
   database: string
+  connectionId: string  // 所属连接ID
   columns: ColumnInfo[]
   data: any[]
   total: number

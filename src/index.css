@@ -8,6 +8,18 @@
   box-sizing: border-box;
 }
 
+/* 文字选中样式 */
+::selection {
+  background: #0078d4;
+  color: #ffffff;
+}
+
+input::selection,
+textarea::selection {
+  background: #0078d4;
+  color: #ffffff;
+}
+
 :root {
   --accent-blue: #0078d4;
   --accent-green: #0f7b0f;
@@ -382,6 +394,395 @@ input:focus, textarea:focus {
 .table-cell {
   contain: content;
   will-change: background-color;
+}
+
+/* ========================================
+   Navicat 风格数据表格样式
+   ======================================== */
+
+.navi-table-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  background: #1e1e1e;
+  outline: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.navi-scroll-container {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+
+/* 表头样式 */
+.navi-header {
+  display: flex;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: #2d2d2d;
+  border-bottom: 1px solid #404040;
+}
+
+.navi-row-number-header {
+  position: sticky;
+  left: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #2d2d2d;
+  border-right: 1px solid #404040;
+  color: #888;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+}
+
+.navi-row-number-header:hover {
+  background: #383838;
+}
+
+.navi-header-cell {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  border-right: 1px solid #404040;
+  background: #2d2d2d;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.1s;
+  flex-shrink: 0;
+}
+
+.navi-header-cell:hover {
+  background: #383838;
+}
+
+.navi-header-cell.pinned {
+  background: #1e3a4a;
+  z-index: 25;
+}
+
+.navi-header-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.navi-header-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.navi-pin-icon {
+  color: #666;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.navi-pin-icon.active {
+  color: #4fc3f7;
+}
+
+.navi-col-name {
+  color: #4fc3f7;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.navi-col-type {
+  color: #888;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.navi-col-comment {
+  color: #6a9955;
+  font-size: 10px;
+  font-weight: normal;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+}
+
+/* 数据体 */
+.navi-body {
+  position: relative;
+  cursor: default;
+  contain: strict;
+}
+
+/* 行容器 - GPU加速 */
+.navi-rows-container {
+  will-change: transform;
+  contain: layout style;
+}
+
+/* 行样式 */
+.navi-row {
+  display: flex;
+  border-bottom: 1px solid #333;
+  contain: layout style;
+}
+
+.navi-row.selected {
+  background: rgba(38, 79, 120, 0.2);
+}
+
+/* 行号 */
+.navi-row-number {
+  position: sticky;
+  left: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #252525;
+  border-right: 1px solid #404040;
+  color: #666;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.navi-row-number:hover {
+  background: #2d2d2d;
+  color: #999;
+}
+
+.navi-row-number.selected {
+  background: #264f78;
+  color: #fff;
+}
+
+/* 单元格样式 */
+.navi-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  border-right: 1px solid #333;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+  overflow: hidden;
+  flex-shrink: 0;
+  contain: strict;
+  cursor: default;
+}
+
+.navi-cell:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* 单元格值 */
+.navi-value {
+  color: #d4d4d4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+}
+
+.navi-null {
+  color: #666;
+  font-style: italic;
+  font-size: 11px;
+  user-select: none;
+}
+
+.navi-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #555;
+  font-size: 13px;
+}
+
+.navi-json {
+  color: #ce9178;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+}
+
+/* 单元格编辑输入框 */
+.navi-cell-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0 8px;
+  margin: 0;
+  background: #1e1e1e;
+  color: #fff;
+  border: 2px solid #007acc;
+  outline: none;
+  font-family: inherit;
+  font-size: inherit;
+  box-sizing: border-box;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* 搜索栏 */
+.navi-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: #252525;
+  border-bottom: 1px solid #404040;
+  flex-shrink: 0;
+}
+
+.navi-search-input {
+  flex: 1;
+  height: 26px;
+  padding: 0 8px;
+  background: #1e1e1e;
+  color: #fff;
+  border: 1px solid #404040;
+  border-radius: 3px;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.navi-search-input:focus {
+  border-color: #007acc;
+}
+
+.navi-search-input::placeholder {
+  color: #666;
+}
+
+.navi-search-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: #999;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.navi-search-btn:hover {
+  background: #383838;
+  color: #fff;
+}
+
+.navi-search-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* 右键菜单 */
+.navi-context-menu {
+  position: fixed;
+  z-index: 50;
+  background: #252525;
+  border: 1px solid #404040;
+  border-radius: 4px;
+  padding: 4px 0;
+  min-width: 180px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  animation: menuFadeIn 0.15s ease;
+}
+
+@keyframes menuFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.navi-context-info {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: #888;
+  border-bottom: 1px solid #333;
+  margin-bottom: 4px;
+}
+
+.navi-context-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  background: transparent;
+  border: none;
+  color: #d4d4d4;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.1s;
+}
+
+.navi-context-item:hover {
+  background: #37373d;
+}
+
+.navi-context-item.danger {
+  color: #f14c4c;
+}
+
+.navi-context-item.danger:hover {
+  background: rgba(241, 76, 76, 0.15);
+}
+
+.navi-context-item.warning {
+  color: #cca700;
+}
+
+.navi-context-item.warning:hover {
+  background: rgba(204, 167, 0, 0.15);
+}
+
+.navi-context-item.success {
+  color: #4ec9b0;
+}
+
+.navi-context-item.success:hover {
+  background: rgba(78, 201, 176, 0.15);
+}
+
+.navi-shortcut {
+  margin-left: auto;
+  font-size: 10px;
+  color: #666;
+}
+
+.navi-context-divider {
+  height: 1px;
+  background: #333;
+  margin: 4px 0;
 }
 
 /* 状态指示器动画 */

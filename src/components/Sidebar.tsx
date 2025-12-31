@@ -1,15 +1,137 @@
-import { Plus, Database, MoreHorizontal, Table2, ChevronRight, ChevronDown, Loader2, HardDrive, FileSpreadsheet, FileCode, FileText, Search, X, Download, Upload, Trash2, CheckSquare, Square, Eye } from 'lucide-react'
+import { Plus, Database, Table2, ChevronRight, ChevronDown, Loader2, HardDrive, FileSpreadsheet, FileCode, FileText, Search, X, Download, Upload, Trash2, CheckSquare, Square, Eye, Folder, FolderOpen, PlusCircle, Edit3, Copy, RefreshCw, Settings } from 'lucide-react'
 import { Connection, DB_INFO, TableInfo } from '../types'
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, memo } from 'react'
+
+// Navicat风格的表分组列表
+const TableGroupList = memo(function TableGroupList({
+  tables,
+  db,
+  connectionId,
+  expandedDbs,
+  setExpandedDbs,
+  onOpenTable,
+  onContextMenu,
+}: {
+  tables: TableInfo[]
+  db: string
+  connectionId: string
+  expandedDbs: Set<string>
+  setExpandedDbs: React.Dispatch<React.SetStateAction<Set<string>>>
+  onOpenTable: (connectionId: string, db: string, table: string) => void
+  onContextMenu: (e: React.MouseEvent, tableName: string) => void
+}) {
+  const regularTables = tables.filter(t => !t.isView)
+  const views = tables.filter(t => t.isView)
+  
+  const tablesKey = `${db}_tables`
+  const viewsKey = `${db}_views`
+  
+  const isTablesExpanded = expandedDbs.has(tablesKey)
+  const isViewsExpanded = expandedDbs.has(viewsKey)
+  
+  const toggleGroup = (key: string) => {
+    setExpandedDbs(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+  
+  // 自动展开表文件夹
+  useEffect(() => {
+    if (regularTables.length > 0) {
+      setExpandedDbs(prev => new Set(prev).add(tablesKey))
+    }
+  }, [regularTables.length, tablesKey, setExpandedDbs])
+  
+  if (tables.length === 0) {
+    return <div className="px-3 py-2 text-xs text-text-disabled">无表</div>
+  }
+  
+  return (
+    <div className="py-0.5">
+      {/* 表文件夹 */}
+      {regularTables.length > 0 && (
+        <div>
+          <div
+            className="flex items-center gap-1.5 px-2 py-1 text-xs text-text-secondary hover:bg-metro-hover hover:text-white cursor-pointer transition-colors rounded-sm"
+            onClick={() => toggleGroup(tablesKey)}
+          >
+            <span className="text-text-tertiary">
+              {isTablesExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </span>
+            <span className="text-accent-orange">
+              {isTablesExpanded ? <FolderOpen size={12} /> : <Folder size={12} />}
+            </span>
+            <span className="flex-1">表</span>
+            <span className="text-text-disabled">{regularTables.length}</span>
+          </div>
+          {isTablesExpanded && (
+            <div className="ml-3 border-l border-metro-border/30">
+              {regularTables.map(table => (
+                <div
+                  key={table.name}
+                  className="flex items-center gap-2 px-3 py-1.5 text-xs text-text-secondary hover:bg-metro-hover hover:text-white cursor-pointer transition-colors rounded-sm mx-0.5"
+                  title={table.name}
+                  onClick={() => onOpenTable(connectionId, db, table.name)}
+                  onContextMenu={(e) => onContextMenu(e, table.name)}
+                >
+                  <Table2 size={12} className="text-accent-orange flex-shrink-0" />
+                  <span className="truncate">{table.name}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      
+      {/* 视图文件夹 */}
+      {views.length > 0 && (
+        <div>
+          <div
+            className="flex items-center gap-1.5 px-2 py-1 text-xs text-text-secondary hover:bg-metro-hover hover:text-white cursor-pointer transition-colors rounded-sm"
+            onClick={() => toggleGroup(viewsKey)}
+          >
+            <span className="text-text-tertiary">
+              {isViewsExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </span>
+            <span className="text-accent-purple">
+              {isViewsExpanded ? <FolderOpen size={12} /> : <Folder size={12} />}
+            </span>
+            <span className="flex-1">视图</span>
+            <span className="text-text-disabled">{views.length}</span>
+          </div>
+          {isViewsExpanded && (
+            <div className="ml-3 border-l border-metro-border/30">
+              {views.map(view => (
+                <div
+                  key={view.name}
+                  className="flex items-center gap-2 px-3 py-1.5 text-xs text-text-secondary hover:bg-metro-hover hover:text-white cursor-pointer transition-colors rounded-sm mx-0.5"
+                  title={`${view.name} (视图)`}
+                  onClick={() => onOpenTable(connectionId, db, view.name)}
+                  onContextMenu={(e) => onContextMenu(e, view.name)}
+                >
+                  <Eye size={12} className="text-accent-purple flex-shrink-0" />
+                  <span className="truncate flex-1">{view.name}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+})
 
 interface Props {
   connections: Connection[]
   activeConnection: string | null
   connectedIds: Set<string>
-  databases: string[]
-  tables: TableInfo[]
+  databasesMap: Map<string, string[]>  // connectionId -> databases[]
+  tablesMap: Map<string, TableInfo[]>
   selectedDatabase: string | null
-  loadingTables: boolean
+  loadingDbSet: Set<string>
   onNewConnection: () => void
   onSelectConnection: (id: string) => void
   onConnect: (conn: Connection) => void
@@ -17,12 +139,23 @@ interface Props {
   onEditConnection: (conn: Connection) => void
   onDeleteConnection: (id: string) => void
   onDeleteConnections?: (ids: string[]) => void
-  onSelectDatabase: (db: string) => void
-  onOpenTable: (database: string, table: string) => void
+  onSelectDatabase: (db: string, connectionId: string) => void
+  onOpenTable: (connectionId: string, database: string, table: string) => void
   onBackupDatabase?: (database: string) => void
   onExportTable?: (database: string, table: string, format: 'excel' | 'sql' | 'csv') => void
   onExportConnections?: (format: 'json' | 'ncx') => void
   onImportConnections?: () => void
+  // 数据库管理
+  onCreateDatabase?: (connectionId: string) => void
+  onDropDatabase?: (connectionId: string, database: string) => void
+  // 表管理
+  onCreateTable?: (connectionId: string, database: string) => void
+  onDropTable?: (connectionId: string, database: string, table: string) => void
+  onTruncateTable?: (connectionId: string, database: string, table: string) => void
+  onRenameTable?: (connectionId: string, database: string, table: string) => void
+  onDuplicateTable?: (connectionId: string, database: string, table: string) => void
+  onRefreshTables?: (connectionId: string, database: string) => void
+  onDesignTable?: (connectionId: string, database: string, table: string) => void
 }
 
 // 计算菜单位置，防止超出屏幕
@@ -50,10 +183,10 @@ export default function Sidebar({
   connections,
   activeConnection,
   connectedIds,
-  databases,
-  tables,
+  databasesMap,
+  tablesMap,
   selectedDatabase,
-  loadingTables,
+  loadingDbSet,
   onNewConnection,
   onSelectConnection,
   onConnect,
@@ -67,10 +200,19 @@ export default function Sidebar({
   onExportTable,
   onExportConnections,
   onImportConnections,
+  onCreateDatabase,
+  onDropDatabase,
+  onCreateTable,
+  onDropTable,
+  onTruncateTable,
+  onRenameTable,
+  onDuplicateTable,
+  onRefreshTables,
+  onDesignTable,
 }: Props) {
   const [menu, setMenu] = useState<{ x: number; y: number; conn: Connection } | null>(null)
-  const [dbMenu, setDbMenu] = useState<{ x: number; y: number; db: string } | null>(null)
-  const [tableMenu, setTableMenu] = useState<{ x: number; y: number; db: string; table: string } | null>(null)
+  const [dbMenu, setDbMenu] = useState<{ x: number; y: number; db: string; connectionId: string } | null>(null)
+  const [tableMenu, setTableMenu] = useState<{ x: number; y: number; db: string; table: string; connectionId: string } | null>(null)
   const [expandedDbs, setExpandedDbs] = useState<Set<string>>(new Set())
   
   // 多选模式
@@ -112,36 +254,48 @@ export default function Sidebar({
     }
   }, [handleSidebarKeyDown])
   
-  // 过滤表
+  // 过滤表 - 从 tablesMap 获取指定数据库的表
   const getFilteredTables = (db: string) => {
-    if (!searchQuery) return tables
-    return tables.filter(t => 
+    const dbTables = tablesMap.get(db) || []
+    if (!searchQuery) return dbTables
+    return dbTables.filter(t => 
       t.name.toLowerCase().includes(searchQuery.toLowerCase())
     )
   }
   
-  // 检查是否有匹配的表
-  const hasMatchingTables = searchQuery && selectedDatabase 
-    ? tables.some(t => t.name.toLowerCase().includes(searchQuery.toLowerCase()))
-    : false
+  // 检查数据库是否有匹配的表
+  const dbHasMatchingTables = (db: string) => {
+    if (!searchQuery) return false
+    const dbTables = tablesMap.get(db) || []
+    return dbTables.some(t => t.name.toLowerCase().includes(searchQuery.toLowerCase()))
+  }
   
   // 过滤数据库：数据库名匹配 或者 该数据库下有匹配的表
-  const filteredDatabases = databases.filter(db => {
-    if (!searchQuery) return true
-    const query = searchQuery.toLowerCase()
-    // 数据库名匹配
-    if (db.toLowerCase().includes(query)) return true
-    // 如果是当前选中的数据库，检查是否有匹配的表
-    if (db === selectedDatabase && hasMatchingTables) return true
-    return false
-  })
+  const getFilteredDatabases = (connDatabases: string[]) => {
+    return connDatabases.filter(db => {
+      if (!searchQuery) return true
+      const query = searchQuery.toLowerCase()
+      // 数据库名匹配
+      if (db.toLowerCase().includes(query)) return true
+      // 检查该数据库是否有匹配的表
+      if (dbHasMatchingTables(db)) return true
+      return false
+    })
+  }
   
-  // 搜索时自动展开匹配的数据库
+  // 搜索时自动展开有匹配表的数据库
   useEffect(() => {
-    if (searchQuery && selectedDatabase && hasMatchingTables) {
-      setExpandedDbs(prev => new Set(prev).add(selectedDatabase))
+    if (searchQuery) {
+      // 遍历所有连接的数据库
+      databasesMap.forEach((dbs) => {
+        dbs.forEach(db => {
+          if (dbHasMatchingTables(db)) {
+            setExpandedDbs(prev => new Set(prev).add(db))
+          }
+        })
+      })
     }
-  }, [searchQuery, selectedDatabase, hasMatchingTables])
+  }, [searchQuery, databasesMap, tablesMap])
 
   return (
     <>
@@ -295,8 +449,10 @@ export default function Sidebar({
                 const isActive = activeConnection === conn.id
                 const isSelected = selectedConnections.has(conn.id)
                 const isExpanded = expandedDbs.has(conn.id)
-                // 只有当前选中的连接才显示数据库
-                const showDatabases = isActive && isConnected && databases.length > 0
+                // 获取该连接的数据库列表
+                const connDatabases = databasesMap.get(conn.id) || []
+                // 已展开且有数据库就显示
+                const showDatabases = isExpanded && isConnected && connDatabases.length > 0
 
                 return (
                   <div key={conn.id}>
@@ -341,49 +497,38 @@ export default function Sidebar({
                         setMenu({ x: pos.x, y: pos.y, conn }) 
                       }}
                     >
-                      {/* 多选复选框 */}
-                      {multiSelectMode && (
-                        <span className={`w-4 h-4 rounded-sm border flex items-center justify-center flex-shrink-0
-                          ${isSelected ? 'bg-accent-blue border-accent-blue' : 'border-text-tertiary'}`}>
-                          {isSelected && <span className="text-white text-xs">✓</span>}
-                        </span>
-                      )}
-                      {/* 展开/折叠箭头 - 始终显示占位 */}
-                      {!multiSelectMode && (
-                        <span className={`flex-shrink-0 w-[14px] ${isConnected ? 'text-text-tertiary' : 'opacity-0'}`}>
-                          {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                        </span>
-                      )}
+                      {/* 复选框/箭头 - 同一列，根据模式显示不同内容 */}
+                      <span className="w-4 flex-shrink-0 flex items-center justify-center">
+                        {multiSelectMode ? (
+                          <span className={`w-4 h-4 rounded-sm border flex items-center justify-center
+                            ${isSelected ? 'bg-accent-blue border-accent-blue' : 'border-text-tertiary'}`}>
+                            {isSelected && <span className="text-white text-xs">✓</span>}
+                          </span>
+                        ) : (
+                          <span className={`${isConnected ? 'text-text-tertiary' : 'opacity-0'}`}>
+                            {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                          </span>
+                        )}
+                      </span>
                       <span className="text-lg flex-shrink-0">{info?.icon}</span>
                       <span className="flex-1 text-sm truncate font-medium">{conn.name}</span>
-                      {/* 增强的连接状态灯 */}
+                      {/* 连接状态灯 - 右对齐 */}
                       <span 
                         className={`w-2.5 h-2.5 rounded-full flex-shrink-0 transition-all ${isConnected 
                           ? 'bg-[#00ff00] shadow-[0_0_8px_#00ff00,0_0_12px_#00ff00]' 
                           : 'bg-text-disabled/40'}`} 
                         title={isConnected ? '已连接' : '未连接'}
                       />
-                      {!multiSelectMode && (
-                        <button 
-                          className="opacity-0 group-hover:opacity-100 p-1 hover:bg-white/20 rounded-sm transition-opacity flex-shrink-0"
-                          onClick={(e) => { 
-                            e.stopPropagation()
-                            const pos = getMenuPosition(e.clientX, e.clientY, 180)
-                            setMenu({ x: pos.x, y: pos.y, conn }) 
-                          }}
-                        >
-                          <MoreHorizontal size={14} />
-                        </button>
-                      )}
                     </div>
                     
                     {/* 数据库列表 - 嵌套在连接下 */}
                     {showDatabases && isExpanded && (
                       <div className="ml-4 border-l border-metro-border/50 mt-0.5">
-                        {filteredDatabases.map(db => {
+                        {getFilteredDatabases(connDatabases).map(db => {
                           const isDbSelected = selectedDatabase === db
                           const isDbExpanded = expandedDbs.has(db)
-                          const dbTables = isDbSelected ? getFilteredTables(db) : []
+                          const dbTables = getFilteredTables(db)
+                          const isLoading = loadingDbSet.has(db)
                           
                           return (
                             <div key={db}>
@@ -393,7 +538,11 @@ export default function Sidebar({
                                     ? 'bg-metro-hover text-white font-medium' 
                                     : 'text-text-secondary hover:bg-metro-hover hover:text-white'}`}
                                 onClick={() => {
-                                  onSelectDatabase(db)
+                                  const willExpand = !expandedDbs.has(db)
+                                  // 展开时自动选择数据库以加载表
+                                  if (willExpand) {
+                                    onSelectDatabase(db, conn.id)
+                                  }
                                   setExpandedDbs(prev => {
                                     const next = new Set(prev)
                                     if (next.has(db)) next.delete(db)
@@ -403,8 +552,8 @@ export default function Sidebar({
                                 }}
                                 onContextMenu={(e) => { 
                                   e.preventDefault()
-                                  const pos = getMenuPosition(e.clientX, e.clientY, 60)
-                                  setDbMenu({ x: pos.x, y: pos.y, db }) 
+                                  const pos = getMenuPosition(e.clientX, e.clientY, 200)
+                                  setDbMenu({ x: pos.x, y: pos.y, db, connectionId: conn.id }) 
                                 }}
                               >
                                 <span className={`flex-shrink-0 ${isDbSelected ? 'text-white/70' : 'text-text-tertiary'}`}>
@@ -414,55 +563,28 @@ export default function Sidebar({
                                 <span className="flex-1 truncate">{db}</span>
                               </div>
                               
-                              {/* 表列表 */}
-                              {isDbExpanded && isDbSelected && (
-                                <div className="ml-5 mt-0.5 border-l border-metro-border/50">
-                                  {loadingTables ? (
+                              {/* 表列表 - Navicat风格分组 */}
+                              {isDbExpanded && (
+                                <div className="ml-4 mt-0.5">
+                                  {isLoading ? (
                                     <div className="flex items-center gap-2 px-3 py-2 text-xs text-text-tertiary">
                                       <Loader2 size={12} className="animate-spin" />
                                       加载中...
                                     </div>
-                                  ) : dbTables.length > 0 ? (
-                                    <div className="py-0.5">
-                                      {/* 先显示表 */}
-                                      {dbTables.filter(t => !t.isView).map(table => (
-                                        <div
-                                          key={table.name}
-                                          className="flex items-center gap-2 px-3 py-1.5 text-xs text-text-secondary hover:bg-metro-hover hover:text-white cursor-pointer transition-colors rounded-sm mx-0.5"
-                                          title={`${table.name} (${table.rows} 行)`}
-                                          onClick={() => onOpenTable(db, table.name)}
-                                          onContextMenu={(e) => { 
-                                            e.preventDefault()
-                                            const pos = getMenuPosition(e.clientX, e.clientY, 160)
-                                            setTableMenu({ x: pos.x, y: pos.y, db, table: table.name }) 
-                                          }}
-                                        >
-                                          <Table2 size={12} className="text-accent-orange flex-shrink-0" />
-                                          <span className="truncate flex-1">{table.name}</span>
-                                          <span className="text-text-disabled font-mono flex-shrink-0">{table.rows}</span>
-                                        </div>
-                                      ))}
-                                      {/* 再显示视图 */}
-                                      {dbTables.filter(t => t.isView).map(view => (
-                                        <div
-                                          key={view.name}
-                                          className="flex items-center gap-2 px-3 py-1.5 text-xs text-text-secondary hover:bg-metro-hover hover:text-white cursor-pointer transition-colors rounded-sm mx-0.5"
-                                          title={`${view.name} (视图)`}
-                                          onClick={() => onOpenTable(db, view.name)}
-                                          onContextMenu={(e) => { 
-                                            e.preventDefault()
-                                            const pos = getMenuPosition(e.clientX, e.clientY, 160)
-                                            setTableMenu({ x: pos.x, y: pos.y, db, table: view.name }) 
-                                          }}
-                                        >
-                                          <Eye size={12} className="text-accent-purple flex-shrink-0" />
-                                          <span className="truncate flex-1">{view.name}</span>
-                                          <span className="text-text-disabled text-[10px] flex-shrink-0">视图</span>
-                                        </div>
-                                      ))}
-                                    </div>
                                   ) : (
-                                    <div className="px-3 py-2 text-xs text-text-disabled">无表</div>
+                                    <TableGroupList 
+                                      tables={dbTables}
+                                      db={db}
+                                      connectionId={conn.id}
+                                      expandedDbs={expandedDbs}
+                                      setExpandedDbs={setExpandedDbs}
+                                      onOpenTable={onOpenTable}
+                                      onContextMenu={(e, tableName) => {
+                                        e.preventDefault()
+                                        const pos = getMenuPosition(e.clientX, e.clientY, 280)
+                                        setTableMenu({ x: pos.x, y: pos.y, db, table: tableName, connectionId: conn.id })
+                                      }}
+                                    />
                                   )}
                                 </div>
                               )}
@@ -488,13 +610,23 @@ export default function Sidebar({
             style={{ left: menu.x, top: menu.y }}
           >
             {connectedIds.has(menu.conn.id) ? (
-              <button
-                className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-3 transition-colors"
-                onClick={() => { onDisconnect(menu.conn.id); setMenu(null) }}
-              >
-                <span className="w-4 h-4 rounded-full border-2 border-accent-red" />
-                断开连接
-              </button>
+              <>
+                <button
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-3 transition-colors"
+                  onClick={() => { onDisconnect(menu.conn.id); setMenu(null) }}
+                >
+                  <span className="w-4 h-4 rounded-full border-2 border-accent-red" />
+                  断开连接
+                </button>
+                <button
+                  className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-3 transition-colors"
+                  onClick={() => { onCreateDatabase?.(menu.conn.id); setMenu(null) }}
+                >
+                  <PlusCircle size={14} className="text-accent-green" />
+                  新建数据库
+                </button>
+                <div className="my-1 border-t border-metro-border" />
+              </>
             ) : (
               <button
                 className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-3 transition-colors"
@@ -531,10 +663,38 @@ export default function Sidebar({
           >
             <button
               className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-3 transition-colors"
+              onClick={() => { onCreateTable?.(dbMenu.connectionId, dbMenu.db); setDbMenu(null) }}
+            >
+              <PlusCircle size={14} className="text-accent-green" />
+              新建表
+            </button>
+            <div className="my-1 border-t border-metro-border" />
+            <button
+              className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-3 transition-colors"
+              onClick={() => { onRefreshTables?.(dbMenu.connectionId, dbMenu.db); setDbMenu(null) }}
+            >
+              <RefreshCw size={14} className="text-text-secondary" />
+              刷新
+            </button>
+            <button
+              className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-3 transition-colors"
               onClick={() => { onBackupDatabase?.(dbMenu.db); setDbMenu(null) }}
             >
               <HardDrive size={14} className="text-accent-blue" />
               备份数据库
+            </button>
+            <div className="my-1 border-t border-metro-border" />
+            <button
+              className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-3 text-accent-red transition-colors"
+              onClick={() => { 
+                if (confirm(`确定要删除数据库 "${dbMenu.db}" 吗？此操作不可恢复！`)) {
+                  onDropDatabase?.(dbMenu.connectionId, dbMenu.db)
+                }
+                setDbMenu(null) 
+              }}
+            >
+              <Trash2 size={14} />
+              删除数据库
             </button>
           </div>
         </>
@@ -549,8 +709,38 @@ export default function Sidebar({
             style={{ left: tableMenu.x, top: tableMenu.y }}
           >
             <div className="px-4 py-1.5 text-xs text-text-disabled border-b border-metro-border mb-1">
-              导出 {tableMenu.table}
+              {tableMenu.table}
             </div>
+            <button
+              className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-3 transition-colors"
+              onClick={() => { onOpenTable(tableMenu.connectionId, tableMenu.db, tableMenu.table); setTableMenu(null) }}
+            >
+              <Table2 size={14} className="text-accent-orange" />
+              打开表
+            </button>
+            <button
+              className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-3 transition-colors"
+              onClick={() => { onDesignTable?.(tableMenu.connectionId, tableMenu.db, tableMenu.table); setTableMenu(null) }}
+            >
+              <Settings size={14} className="text-accent-teal" />
+              设计表
+            </button>
+            <button
+              className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-3 transition-colors"
+              onClick={() => { onRenameTable?.(tableMenu.connectionId, tableMenu.db, tableMenu.table); setTableMenu(null) }}
+            >
+              <Edit3 size={14} className="text-accent-blue" />
+              重命名
+            </button>
+            <button
+              className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-3 transition-colors"
+              onClick={() => { onDuplicateTable?.(tableMenu.connectionId, tableMenu.db, tableMenu.table); setTableMenu(null) }}
+            >
+              <Copy size={14} className="text-accent-purple" />
+              复制表
+            </button>
+            <div className="my-1 border-t border-metro-border" />
+            <div className="px-4 py-1.5 text-xs text-text-disabled">导出</div>
             <button
               className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-3 transition-colors"
               onClick={() => { onExportTable?.(tableMenu.db, tableMenu.table, 'excel'); setTableMenu(null) }}
@@ -571,6 +761,31 @@ export default function Sidebar({
             >
               <FileText size={14} className="text-accent-blue" />
               导出 CSV
+            </button>
+            <div className="my-1 border-t border-metro-border" />
+            <button
+              className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-3 text-accent-orange transition-colors"
+              onClick={() => { 
+                if (confirm(`确定要清空表 "${tableMenu.table}" 的所有数据吗？此操作不可恢复！`)) {
+                  onTruncateTable?.(tableMenu.connectionId, tableMenu.db, tableMenu.table)
+                }
+                setTableMenu(null) 
+              }}
+            >
+              <RefreshCw size={14} />
+              清空表
+            </button>
+            <button
+              className="w-full px-4 py-2 text-left text-sm hover:bg-metro-hover flex items-center gap-3 text-accent-red transition-colors"
+              onClick={() => { 
+                if (confirm(`确定要删除表 "${tableMenu.table}" 吗？此操作不可恢复！`)) {
+                  onDropTable?.(tableMenu.connectionId, tableMenu.db, tableMenu.table)
+                }
+                setTableMenu(null) 
+              }}
+            >
+              <Trash2 size={14} />
+              删除表
             </button>
           </div>
         </>

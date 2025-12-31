@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { X, Loader2, Shield, FolderOpen } from 'lucide-react'
 import { Connection, DatabaseType, DB_INFO } from '../types'
-import api from '../lib/tauri-api'
+import api from '../lib/electron-api'
 
 interface Props {
   connection: Connection | null
