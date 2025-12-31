@@ -69,16 +69,17 @@ const TableGroupList = memo(function TableGroupList({
             </span>
           </div>
           {isTablesExpanded && (
-            <div className="ml-5 pl-3 border-l border-border-light">
+            <div className="ml-4 pl-2 border-l border-border-light">
               {regularTables.map(table => (
                 <div
                   key={table.name}
-                  className="flex items-center gap-2 px-3 py-1.5 mx-1 text-xs text-text-secondary hover:bg-light-hover cursor-pointer transition-colors rounded-lg group"
+                  className="flex items-center gap-2 px-2 py-1.5 mr-1 text-text-secondary hover:bg-light-hover cursor-pointer transition-colors rounded-lg group"
                   onClick={() => onOpenTable(connectionId, db, table.name)}
                   onContextMenu={(e) => onContextMenu(e, table.name)}
+                  title={table.name}
                 >
-                  <Table2 size={12} className="text-warning-500 flex-shrink-0" />
-                  <span className="truncate font-mono text-[11px]">{table.name}</span>
+                  <Table2 size={14} className="text-warning-500 flex-shrink-0" />
+                  <span className="truncate font-mono text-[13px] flex-1 min-w-0">{table.name}</span>
                 </div>
               ))}
             </div>
@@ -105,16 +106,17 @@ const TableGroupList = memo(function TableGroupList({
             </span>
           </div>
           {isViewsExpanded && (
-            <div className="ml-5 pl-3 border-l border-border-light">
+            <div className="ml-4 pl-2 border-l border-border-light">
               {views.map(view => (
                 <div
                   key={view.name}
-                  className="flex items-center gap-2 px-3 py-1.5 mx-1 text-xs text-text-secondary hover:bg-light-hover cursor-pointer transition-colors rounded-lg group"
+                  className="flex items-center gap-2 px-2 py-1.5 mr-1 text-text-secondary hover:bg-light-hover cursor-pointer transition-colors rounded-lg group"
                   onClick={() => onOpenTable(connectionId, db, view.name)}
                   onContextMenu={(e) => onContextMenu(e, view.name)}
+                  title={view.name}
                 >
-                  <Eye size={12} className="text-info-500 flex-shrink-0" />
-                  <span className="truncate font-mono text-[11px]">{view.name}</span>
+                  <Eye size={14} className="text-info-500 flex-shrink-0" />
+                  <span className="truncate font-mono text-[13px] flex-1 min-w-0">{view.name}</span>
                 </div>
               ))}
             </div>
@@ -133,6 +135,7 @@ interface Props {
   tablesMap: Map<string, TableInfo[]>
   selectedDatabase: string | null
   loadingDbSet: Set<string>
+  loadingConnectionsSet?: Set<string>
   onNewConnection: () => void
   onSelectConnection: (id: string) => void
   onConnect: (conn: Connection) => void
@@ -155,6 +158,7 @@ interface Props {
   onDuplicateTable?: (connectionId: string, database: string, table: string) => void
   onRefreshTables?: (connectionId: string, database: string) => void
   onDesignTable?: (connectionId: string, database: string, table: string) => void
+  onFetchDatabases?: (connectionId: string) => void
 }
 
 function getMenuPosition(x: number, y: number, menuHeight: number = 200, menuWidth: number = 200) {
@@ -183,6 +187,7 @@ export default function Sidebar({
   tablesMap,
   selectedDatabase,
   loadingDbSet,
+  loadingConnectionsSet,
   onNewConnection,
   onSelectConnection,
   onConnect,
@@ -205,6 +210,7 @@ export default function Sidebar({
   onDuplicateTable,
   onRefreshTables,
   onDesignTable,
+  onFetchDatabases,
 }: Props) {
   const [menu, setMenu] = useState<{ x: number; y: number; conn: Connection } | null>(null)
   const [dbMenu, setDbMenu] = useState<{ x: number; y: number; db: string; connectionId: string } | null>(null)
@@ -216,12 +222,27 @@ export default function Sidebar({
   const searchInputRef = useRef<HTMLInputElement>(null)
   const sidebarRef = useRef<HTMLDivElement>(null)
   const [isFocused, setIsFocused] = useState(false)
+  const prevConnectedIdsRef = useRef<Set<string>>(new Set())
   
   useEffect(() => {
     if (selectedDatabase) {
       setExpandedDbs(prev => new Set(prev).add(selectedDatabase))
     }
   }, [selectedDatabase])
+  
+  // 当连接状态变化时，只展开新建立的连接（不影响其他已连接但被折叠的连接）
+  useEffect(() => {
+    const prevIds = prevConnectedIdsRef.current
+    // 找出新增的连接
+    connectedIds.forEach(id => {
+      if (!prevIds.has(id)) {
+        // 只展开新建立的连接
+        setExpandedDbs(prev => new Set(prev).add(id))
+      }
+    })
+    // 更新引用
+    prevConnectedIdsRef.current = new Set(connectedIds)
+  }, [connectedIds])
   
   const handleSidebarKeyDown = useCallback((e: KeyboardEvent) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'f' && isFocused) {
@@ -280,7 +301,7 @@ export default function Sidebar({
     <>
       <div 
         ref={sidebarRef}
-        className="w-64 bg-light-surface flex flex-col h-full select-none border-r border-border-default"
+        className="w-80 bg-light-surface flex flex-col h-full select-none border-r border-border-default"
         tabIndex={0}
         onFocus={() => setIsFocused(true)}
         onBlur={(e) => {
@@ -449,18 +470,23 @@ export default function Sidebar({
                         } else {
                           onSelectConnection(conn.id)
                           if (isConnected) {
+                            const willExpand = !expandedDbs.has(conn.id)
                             setExpandedDbs(prev => {
                               const next = new Set(prev)
                               if (next.has(conn.id)) next.delete(conn.id)
                               else next.add(conn.id)
                               return next
                             })
+                            // 如果展开但数据库列表为空，尝试获取
+                            if (willExpand && connDatabases.length === 0 && onFetchDatabases) {
+                              onFetchDatabases(conn.id)
+                            }
                           }
                         }
                       }}
                       onDoubleClick={async () => {
                         if (!multiSelectMode && !isConnected) {
-                          onConnect(conn)
+                          await onConnect(conn)
                           setExpandedDbs(prev => new Set(prev).add(conn.id))
                         }
                       }}
@@ -488,9 +514,18 @@ export default function Sidebar({
                     </div>
                     
                     {/* 数据库列表 */}
-                    {showDatabases && (
+                    {isExpanded && isConnected && (
                       <div className="ml-5 mt-0.5 pl-3 border-l border-border-light animate-slide-down">
-                        {getFilteredDatabases(connDatabases).map(db => {
+                        {loadingConnectionsSet?.has(conn.id) ? (
+                          <div className="px-2.5 py-2 text-sm text-text-muted flex items-center gap-2">
+                            <span className="w-3 h-3 border-2 border-primary-400 border-t-transparent rounded-full animate-spin" />
+                            加载数据库...
+                          </div>
+                        ) : connDatabases.length === 0 ? (
+                          <div className="px-2.5 py-2 text-sm text-text-muted">
+                            无数据库或无权限
+                          </div>
+                        ) : getFilteredDatabases(connDatabases).map(db => {
                           const isDbSelected = selectedDatabase === db
                           const isDbExpanded = expandedDbs.has(db)
                           const dbTables = getFilteredTables(db)
@@ -590,7 +625,11 @@ export default function Sidebar({
             ) : (
               <button
                 className="w-full px-3 py-2 text-left text-sm hover:bg-light-hover flex items-center gap-3 text-text-secondary"
-                onClick={() => { onConnect(menu.conn); setMenu(null) }}
+                onClick={() => { 
+                  onConnect(menu.conn)
+                  setExpandedDbs(prev => new Set(prev).add(menu.conn.id))
+                  setMenu(null) 
+                }}
               >
                 <span className="w-3 h-3 rounded-full border-2 border-success-500" />
                 连接

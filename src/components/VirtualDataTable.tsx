@@ -1,5 +1,5 @@
 import { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { Key, Pin, PinOff, Trash2, Search, X, ChevronLeft, ChevronRight, RefreshCw, FileX, Type, Copy, ClipboardPaste } from 'lucide-react'
+import { Key, Pin, PinOff, Trash2, Search, X, ChevronLeft, ChevronRight, RefreshCw, FileX, Type, Copy, ClipboardPaste, Calendar, Clock, Check } from 'lucide-react'
 
 // 高性能虚拟滚动数据表格 - Navicat风格
 interface DataTableColumn {
@@ -27,43 +27,643 @@ interface VirtualDataTableProps {
   overscan?: number
 }
 
-// 格式化日期时间 - 缓存结果
-const dateTimeCache = new Map<string, string>()
+// 判断是否是日期/时间类型
+const isDateTimeType = (colType: string): boolean => {
+  const type = (colType || '').toLowerCase()
+  return type.includes('datetime') || type.includes('timestamp')
+}
+
+const isDateType = (colType: string): boolean => {
+  const type = (colType || '').toLowerCase()
+  return type.includes('date') && !isDateTimeType(type)
+}
+
+const isTimeType = (colType: string): boolean => {
+  const type = (colType || '').toLowerCase()
+  return type === 'time' || type.startsWith('time(')
+}
+
+// 获取编辑输入框类型
+type InputType = 'text' | 'date' | 'datetime-local' | 'time'
+const getInputType = (colType: string): InputType => {
+  if (isDateTimeType(colType)) return 'datetime-local'
+  if (isDateType(colType)) return 'date'
+  if (isTimeType(colType)) return 'time'
+  return 'text'
+}
+
+// 将数据库值转换为 input[type=datetime-local] 可用的格式（精确到秒）
+const toDateTimeLocalFormat = (value: any): string => {
+  if (value === null || value === undefined || value === '') return ''
+  const strValue = String(value)
+  // 匹配各种日期时间格式
+  const dtMatch = strValue.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):?(\d{2})?/)
+  if (dtMatch) {
+    const [, year, month, day, hour, min, sec = '00'] = dtMatch
+    return `${year}-${month}-${day}T${hour}:${min}:${sec}`
+  }
+  return strValue
+}
+
+// 将数据库值转换为 input[type=date] 可用的格式
+const toDateFormat = (value: any): string => {
+  if (value === null || value === undefined || value === '') return ''
+  const strValue = String(value)
+  // 匹配日期格式
+  const dMatch = strValue.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (dMatch) {
+    const [, year, month, day] = dMatch
+    return `${year}-${month}-${day}`
+  }
+  return strValue
+}
+
+// 将数据库值转换为 input[type=time] 可用的格式（精确到秒）
+const toTimeFormat = (value: any): string => {
+  if (value === null || value === undefined || value === '') return ''
+  const strValue = String(value)
+  // 匹配时间格式
+  const tMatch = strValue.match(/(\d{2}):(\d{2}):?(\d{2})?/)
+  if (tMatch) {
+    const [, hour, min, sec = '00'] = tMatch
+    return `${hour}:${min}:${sec}`
+  }
+  return strValue
+}
+
+// 将 input 值转换为数据库格式
+const fromInputValue = (value: string, inputType: InputType): string | null => {
+  if (value === '' || value.trim() === '') return null
+  
+  let result = value.trim()
+  
+  if (inputType === 'datetime-local') {
+    // 支持多种格式：2025/12/31 23:59:30, 2025-12-31T23:59:30, 2025-12-31 23:59:30
+    // 转换为数据库格式：2025-12-31 23:59:30
+    result = result.replace('T', ' ').replace(/\//g, '-')
+    
+    // 如果没有秒，添加 :00
+    const parts = result.split(' ')
+    if (parts.length === 2) {
+      const timeParts = parts[1].split(':')
+      if (timeParts.length === 2) {
+        result = `${parts[0]} ${parts[1]}:00`
+      }
+    }
+    return result
+  }
+  
+  if (inputType === 'date') {
+    // 转换 / 为 -
+    return result.replace(/\//g, '-')
+  }
+  
+  return result
+}
+
+// 获取编辑值（根据字段类型转换格式）- 使用友好的显示格式
+const getEditValue = (value: any, colType: string): string => {
+  if (value === null || value === undefined) return ''
+  const inputType = getInputType(colType)
+  const strValue = String(value)
+  
+  if (inputType === 'datetime-local') {
+    // 匹配日期时间格式并转换为 YYYY/MM/DD HH:MM:SS
+    const match = strValue.match(/(\d{4})[-/](\d{2})[-/](\d{2})[T ](\d{2}):(\d{2}):?(\d{2})?/)
+    if (match) {
+      const [, y, m, d, h, mi, s = '00'] = match
+      return `${y}/${m}/${d} ${h}:${mi}:${s}`
+    }
+  }
+  if (inputType === 'date') {
+    const match = strValue.match(/(\d{4})[-/](\d{2})[-/](\d{2})/)
+    if (match) {
+      const [, y, m, d] = match
+      return `${y}/${m}/${d}`
+    }
+  }
+  if (inputType === 'time') {
+    const match = strValue.match(/(\d{2}):(\d{2}):?(\d{2})?/)
+    if (match) {
+      const [, h, mi, s = '00'] = match
+      return `${h}:${mi}:${s}`
+    }
+  }
+  return strValue
+}
+
+// 解析并标准化用户输入的日期时间格式（支持多种格式）
+const parseAndNormalizeDateInput = (input: string, inputType: InputType): string => {
+  if (!input || input.trim() === '') return ''
+  
+  const str = input.trim()
+  
+  // 支持的日期格式：
+  // - 2025/12/29, 2025-12-29, 2025.12.29
+  // - 12/29/2025, 29/12/2025 (根据数值大小判断)
+  // - 20251229
+  
+  // 支持的时间格式：
+  // - 14:30:00, 14:30, 143000, 1430
+  
+  // 支持的日期时间格式：
+  // - 2025/12/29 14:30:00
+  // - 2025-12-29T14:30:00
+  // - 2025.12.29 14:30
+  
+  if (inputType === 'time') {
+    // 匹配时间格式
+    const timeMatch = str.match(/^(\d{1,2}):(\d{1,2}):?(\d{1,2})?$/)
+    if (timeMatch) {
+      const [, h, m, s = '0'] = timeMatch
+      return `${h.padStart(2, '0')}:${m.padStart(2, '0')}:${s.padStart(2, '0')}`
+    }
+    // 匹配紧凑时间格式 HHMMSS 或 HHMM
+    const compactTime = str.match(/^(\d{2})(\d{2})(\d{2})?$/)
+    if (compactTime) {
+      const [, h, m, s = '00'] = compactTime
+      return `${h}:${m}:${s}`
+    }
+    return str
+  }
+  
+  // 提取日期和时间部分
+  let datePart = ''
+  let timePart = ''
+  
+  // 尝试分离日期和时间
+  const dtMatch = str.match(/^(.+?)[T\s](\d{1,2}:\d{1,2}(?::\d{1,2})?)$/)
+  if (dtMatch) {
+    datePart = dtMatch[1]
+    timePart = dtMatch[2]
+  } else {
+    datePart = str
+    timePart = ''
+  }
+  
+  // 解析日期部分
+  let year = '', month = '', day = ''
+  
+  // 格式: YYYY/MM/DD, YYYY-MM-DD, YYYY.MM.DD
+  const ymdMatch = datePart.match(/^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?$/)
+  if (ymdMatch) {
+    [, year, month, day] = ymdMatch
+  }
+  
+  // 格式: YYYYMMDD
+  const compactDate = datePart.match(/^(\d{4})(\d{2})(\d{2})$/)
+  if (compactDate) {
+    [, year, month, day] = compactDate
+  }
+  
+  // 格式: MM/DD/YYYY 或 DD/MM/YYYY（根据数值判断）
+  const mdyMatch = datePart.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/)
+  if (mdyMatch) {
+    const [, a, b, y] = mdyMatch
+    year = y
+    // 如果第一个数字 > 12，则是 DD/MM/YYYY
+    if (parseInt(a) > 12) {
+      day = a
+      month = b
+    } else {
+      month = a
+      day = b
+    }
+  }
+  
+  if (!year || !month || !day) {
+    return str // 无法解析，返回原值
+  }
+  
+  // 标准化日期
+  const normalizedDate = `${year}/${month.padStart(2, '0')}/${day.padStart(2, '0')}`
+  
+  if (inputType === 'date') {
+    return normalizedDate
+  }
+  
+  // datetime-local 需要处理时间部分
+  if (timePart) {
+    const tMatch = timePart.match(/^(\d{1,2}):(\d{1,2}):?(\d{1,2})?$/)
+    if (tMatch) {
+      const [, h, m, s = '0'] = tMatch
+      return `${normalizedDate} ${h.padStart(2, '0')}:${m.padStart(2, '0')}:${s.padStart(2, '0')}`
+    }
+  }
+  
+  // 如果没有时间部分，添加默认时间
+  return inputType === 'datetime-local' ? `${normalizedDate} 00:00:00` : normalizedDate
+}
+
+// 格式化日期时间显示
 const formatDateTime = (value: any, colType: string): string => {
   if (value === null || value === undefined) return ''
-  
-  const cacheKey = `${value}-${colType}`
-  if (dateTimeCache.has(cacheKey)) return dateTimeCache.get(cacheKey)!
   
   const strValue = String(value)
   const type = (colType || '').toLowerCase()
   
-  const isDateTimeType = type.includes('datetime') || type.includes('timestamp')
-  const isDateType = type.includes('date') && !isDateTimeType
+  const isDateTime = type.includes('datetime') || type.includes('timestamp')
+  const isDate = type.includes('date') && !isDateTime
+  const isTime = type === 'time' || type.startsWith('time(')
   
-  const dateTimeRegex = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})/
-  const dateOnlyRegex = /^(\d{4})-(\d{2})-(\d{2})$/
+  // 匹配日期时间格式：2025-12-29 14:49:28 或 2025-12-29T14:49:28 或 2025/12/29 14:49:28
+  const dateTimeRegex = /^(\d{4})[-/](\d{2})[-/](\d{2})[T ](\d{2}):(\d{2}):?(\d{2})?/
+  // 匹配纯日期格式
+  const dateOnlyRegex = /^(\d{4})[-/](\d{2})[-/](\d{2})$/
+  // 匹配纯时间格式
+  const timeRegex = /^(\d{2}):(\d{2}):?(\d{2})?$/
   
-  let result = strValue
   const dtMatch = strValue.match(dateTimeRegex)
   const dMatch = strValue.match(dateOnlyRegex)
+  const tMatch = strValue.match(timeRegex)
   
-  if (isDateTimeType || dtMatch) {
-    if (dtMatch) {
-      const [, year, month, day, hour, min, sec] = dtMatch
-      result = `${year}/${month}/${day} ${hour}:${min}:${sec}`
+  if (isTime && tMatch) {
+    const [, hour, min, sec = '00'] = tMatch
+    return `${hour}:${min}:${sec}`
+  }
+  
+  if ((isDateTime || dtMatch) && dtMatch) {
+    const [, year, month, day, hour, min, sec = '00'] = dtMatch
+    return `${year}/${month}/${day} ${hour}:${min}:${sec}`
+  }
+  
+  if ((isDate || dMatch) && dMatch) {
+    const [, year, month, day] = dMatch
+    return `${year}/${month}/${day}`
+  }
+  
+  return strValue
+}
+
+// ============ 自定义日期时间选择器组件 ============
+interface DateTimePickerProps {
+  value: string
+  type: 'date' | 'datetime-local' | 'time'
+  onChange: (value: string) => void
+  onClose: () => void
+  position: { top: number; left: number }
+}
+
+const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+
+function DateTimePicker({ value, type, onChange, onClose, position }: DateTimePickerProps) {
+  // 解析初始值
+  const parseValue = () => {
+    const now = new Date()
+    if (!value) {
+      return {
+        year: now.getFullYear(),
+        month: now.getMonth(),
+        day: now.getDate(),
+        hour: now.getHours(),
+        minute: now.getMinutes(),
+        second: now.getSeconds()
+      }
     }
-  } else if (isDateType || dMatch) {
-    if (dMatch) {
-      const [, year, month, day] = dMatch
-      result = `${year}/${month}/${day}`
+    
+    if (type === 'time') {
+      const match = value.match(/(\d{1,2}):(\d{1,2}):?(\d{1,2})?/)
+      if (match) {
+        return {
+          year: now.getFullYear(),
+          month: now.getMonth(),
+          day: now.getDate(),
+          hour: parseInt(match[1]),
+          minute: parseInt(match[2]),
+          second: parseInt(match[3] || '0')
+        }
+      }
+    } else {
+      // 支持多种格式：2025-12-29T14:49:28, 2025/12/29 14:49:28, 2025-12-29 14:49:28
+      const match = value.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[T ](\d{1,2}):(\d{1,2}):?(\d{1,2})?)?/)
+      if (match) {
+        return {
+          year: parseInt(match[1]),
+          month: parseInt(match[2]) - 1,
+          day: parseInt(match[3]),
+          hour: parseInt(match[4] || '0'),
+          minute: parseInt(match[5] || '0'),
+          second: parseInt(match[6] || '0')
+        }
+      }
+    }
+    
+    return {
+      year: now.getFullYear(),
+      month: now.getMonth(),
+      day: now.getDate(),
+      hour: 0,
+      minute: 0,
+      second: 0
     }
   }
   
-  // 限制缓存大小
-  if (dateTimeCache.size > 10000) dateTimeCache.clear()
-  dateTimeCache.set(cacheKey, result)
-  return result
+  const initial = parseValue()
+  const [viewYear, setViewYear] = useState(initial.year)
+  const [viewMonth, setViewMonth] = useState(initial.month)
+  const [selectedDate, setSelectedDate] = useState({ year: initial.year, month: initial.month, day: initial.day })
+  const [selectedTime, setSelectedTime] = useState({ hour: initial.hour, minute: initial.minute, second: initial.second })
+  const containerRef = useRef<HTMLDivElement>(null)
+  
+  // 构建输出值 - 统一使用 YYYY/MM/DD HH:mm:ss 格式
+  const buildValue = (date: typeof selectedDate, time: typeof selectedTime) => {
+    const pad = (n: number) => n.toString().padStart(2, '0')
+    if (type === 'time') {
+      return `${pad(time.hour)}:${pad(time.minute)}:${pad(time.second)}`
+    } else if (type === 'date') {
+      return `${date.year}/${pad(date.month + 1)}/${pad(date.day)}`
+    } else {
+      return `${date.year}/${pad(date.month + 1)}/${pad(date.day)} ${pad(time.hour)}:${pad(time.minute)}:${pad(time.second)}`
+    }
+  }
+  
+  // 获取某月的天数
+  const getDaysInMonth = (year: number, month: number) => new Date(year, month + 1, 0).getDate()
+  
+  // 获取某月第一天是星期几（调整为周一开始）
+  const getFirstDayOfMonth = (year: number, month: number) => {
+    const day = new Date(year, month, 1).getDay()
+    return day === 0 ? 6 : day - 1  // 周日变为6，其他减1
+  }
+  
+  // 生成日历数据
+  const generateCalendarDays = () => {
+    const daysInMonth = getDaysInMonth(viewYear, viewMonth)
+    const firstDay = getFirstDayOfMonth(viewYear, viewMonth)
+    const daysInPrevMonth = getDaysInMonth(viewYear, viewMonth - 1)
+    
+    const days: { day: number; isCurrentMonth: boolean; isToday: boolean }[] = []
+    
+    // 上月剩余天数
+    for (let i = firstDay - 1; i >= 0; i--) {
+      days.push({ day: daysInPrevMonth - i, isCurrentMonth: false, isToday: false })
+    }
+    
+    // 本月天数
+    const today = new Date()
+    for (let i = 1; i <= daysInMonth; i++) {
+      const isToday = viewYear === today.getFullYear() && viewMonth === today.getMonth() && i === today.getDate()
+      days.push({ day: i, isCurrentMonth: true, isToday })
+    }
+    
+    // 下月开始天数
+    const remaining = 42 - days.length
+    for (let i = 1; i <= remaining; i++) {
+      days.push({ day: i, isCurrentMonth: false, isToday: false })
+    }
+    
+    return days
+  }
+  
+  const handlePrevMonth = () => {
+    if (viewMonth === 0) {
+      setViewYear(viewYear - 1)
+      setViewMonth(11)
+    } else {
+      setViewMonth(viewMonth - 1)
+    }
+  }
+  
+  const handleNextMonth = () => {
+    if (viewMonth === 11) {
+      setViewYear(viewYear + 1)
+      setViewMonth(0)
+    } else {
+      setViewMonth(viewMonth + 1)
+    }
+  }
+  
+  const handleSelectDay = (day: number, isCurrentMonth: boolean) => {
+    if (isCurrentMonth) {
+      const newDate = { year: viewYear, month: viewMonth, day }
+      setSelectedDate(newDate)
+      onChange(buildValue(newDate, selectedTime))
+    }
+  }
+  
+  const handleTimeChange = (field: 'hour' | 'minute' | 'second', value: number) => {
+    const max = field === 'hour' ? 23 : 59
+    const clampedValue = Math.max(0, Math.min(max, value))
+    const newTime = { ...selectedTime, [field]: clampedValue }
+    setSelectedTime(newTime)
+    onChange(buildValue(selectedDate, newTime))
+  }
+  
+  const handleToday = () => {
+    const now = new Date()
+    const newDate = { year: now.getFullYear(), month: now.getMonth(), day: now.getDate() }
+    const newTime = type !== 'date' 
+      ? { hour: now.getHours(), minute: now.getMinutes(), second: now.getSeconds() }
+      : selectedTime
+    
+    setViewYear(now.getFullYear())
+    setViewMonth(now.getMonth())
+    setSelectedDate(newDate)
+    if (type !== 'date') {
+      setSelectedTime(newTime)
+    }
+    onChange(buildValue(newDate, newTime))
+  }
+  
+  const isSelected = (day: number, isCurrentMonth: boolean) => {
+    return isCurrentMonth && selectedDate.year === viewYear && selectedDate.month === viewMonth && selectedDate.day === day
+  }
+  
+  const calendarDays = generateCalendarDays()
+  
+  // 时间输入框组件
+  const TimeInput = ({ value, onChange: onValueChange, max, label }: { value: number; onChange: (v: number) => void; max: number; label: string }) => {
+    const [inputValue, setInputValue] = useState(value.toString().padStart(2, '0'))
+    
+    useEffect(() => {
+      setInputValue(value.toString().padStart(2, '0'))
+    }, [value])
+    
+    const handleWheel = (e: React.WheelEvent) => {
+      e.preventDefault()
+      const delta = e.deltaY > 0 ? -1 : 1
+      const newValue = value + delta
+      if (newValue >= 0 && newValue <= max) {
+        onValueChange(newValue)
+      } else if (newValue < 0) {
+        onValueChange(max)
+      } else {
+        onValueChange(0)
+      }
+    }
+    
+    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const val = e.target.value.replace(/\D/g, '').slice(0, 2)
+      setInputValue(val)
+    }
+    
+    const handleBlur = () => {
+      const num = parseInt(inputValue) || 0
+      const clamped = Math.max(0, Math.min(max, num))
+      setInputValue(clamped.toString().padStart(2, '0'))
+      onValueChange(clamped)
+    }
+    
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        onValueChange(value >= max ? 0 : value + 1)
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        onValueChange(value <= 0 ? max : value - 1)
+      } else if (e.key === 'Enter') {
+        handleBlur()
+      }
+    }
+    
+    return (
+      <div className="flex flex-col items-center">
+        <input
+          type="text"
+          value={inputValue}
+          onChange={handleChange}
+          onBlur={handleBlur}
+          onKeyDown={handleKeyDown}
+          onWheel={handleWheel}
+          className="w-10 h-7 text-center text-sm font-medium bg-primary-500 text-white rounded 
+                     border-0 outline-none focus:ring-2 focus:ring-primary-300"
+        />
+        <span className="text-[10px] text-text-tertiary mt-0.5">{label}</span>
+      </div>
+    )
+  }
+
+  // 计算弹窗位置
+  const getPopupPosition = () => {
+    const popupWidth = type === 'time' ? 140 : (type === 'date' ? 220 : 220)
+    const popupHeight = type === 'time' ? 80 : 320
+    
+    let top = position.top
+    let left = position.left
+    
+    if (position.top + popupHeight > window.innerHeight - 20) {
+      top = position.top - popupHeight - 40
+    }
+    if (left + popupWidth > window.innerWidth - 20) {
+      left = window.innerWidth - popupWidth - 20
+    }
+    if (left < 20) left = 20
+    if (top < 20) top = 20
+    
+    return { top, left }
+  }
+  
+  const popupPos = getPopupPosition()
+  const pad = (n: number) => n.toString().padStart(2, '0')
+
+  return (
+    <div 
+      ref={containerRef}
+      className="fixed bg-white rounded-lg shadow-xl border border-primary-200 overflow-hidden"
+      style={{ 
+        top: popupPos.top,
+        left: popupPos.left,
+        zIndex: 99999,
+        animation: 'fadeIn 0.1s ease-out'
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {/* 时间选择部分（右侧或独立） */}
+      {type !== 'date' && type === 'time' && (
+        <div className="p-3 bg-primary-500">
+          <div className="flex items-center gap-1 justify-center">
+            <TimeInput value={selectedTime.hour} onChange={(v) => handleTimeChange('hour', v)} max={23} label="" />
+            <span className="text-white font-bold text-lg">:</span>
+            <TimeInput value={selectedTime.minute} onChange={(v) => handleTimeChange('minute', v)} max={59} label="" />
+            <span className="text-white font-bold text-lg">:</span>
+            <TimeInput value={selectedTime.second} onChange={(v) => handleTimeChange('second', v)} max={59} label="" />
+          </div>
+        </div>
+      )}
+      
+      {/* 日历部分 */}
+      {type !== 'time' && (
+        <div className="p-2" style={{ width: 220 }}>
+          {/* 月份导航 */}
+          <div className="flex items-center justify-between mb-2">
+            <button 
+              onClick={handlePrevMonth}
+              className="w-6 h-6 flex items-center justify-center rounded hover:bg-light-hover text-text-tertiary hover:text-text-primary"
+            >
+              <ChevronLeft size={14} />
+            </button>
+            <span className="text-xs font-semibold text-text-primary">
+              {viewYear}年{viewMonth + 1}月
+            </span>
+            <button 
+              onClick={handleNextMonth}
+              className="w-6 h-6 flex items-center justify-center rounded hover:bg-light-hover text-text-tertiary hover:text-text-primary"
+            >
+              <ChevronRight size={14} />
+            </button>
+          </div>
+          
+          {/* 星期表头 */}
+          <div className="grid grid-cols-7 gap-0 mb-1">
+            {WEEKDAYS.map(d => (
+              <div key={d} className="h-5 flex items-center justify-center text-[10px] font-medium text-primary-600">
+                {d}
+              </div>
+            ))}
+          </div>
+          
+          {/* 日期网格 */}
+          <div className="grid grid-cols-7 gap-0">
+            {calendarDays.map((d, i) => (
+              <div
+                key={i}
+                onClick={() => handleSelectDay(d.day, d.isCurrentMonth)}
+                className={`h-6 flex items-center justify-center text-xs cursor-pointer transition-all
+                  ${!d.isCurrentMonth ? 'text-text-muted' : 'text-text-primary'}
+                  ${d.isToday && !isSelected(d.day, d.isCurrentMonth) ? 'bg-gray-100 text-primary-600 font-medium' : ''}
+                  ${isSelected(d.day, d.isCurrentMonth) 
+                    ? 'bg-primary-500 text-white font-medium rounded' 
+                    : d.isCurrentMonth ? 'hover:bg-light-hover' : ''}`}
+              >
+                {d.day}
+              </div>
+            ))}
+          </div>
+          
+          {/* datetime 类型时显示时间选择器 */}
+          {type === 'datetime-local' && (
+            <div className="mt-2 pt-2 border-t border-border-light">
+              <div className="flex items-center justify-center gap-1 bg-primary-500 rounded p-1.5">
+                <TimeInput value={selectedTime.hour} onChange={(v) => handleTimeChange('hour', v)} max={23} label="" />
+                <span className="text-white font-bold">:</span>
+                <TimeInput value={selectedTime.minute} onChange={(v) => handleTimeChange('minute', v)} max={59} label="" />
+                <span className="text-white font-bold">:</span>
+                <TimeInput value={selectedTime.second} onChange={(v) => handleTimeChange('second', v)} max={59} label="" />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      
+      {/* 底部显示当前选择和快捷操作 */}
+      <div className="px-2 py-1.5 bg-light-surface border-t border-border-light flex items-center justify-between text-[10px]">
+        <span className="text-text-secondary font-mono">
+          {type === 'time' 
+            ? `${pad(selectedTime.hour)}:${pad(selectedTime.minute)}:${pad(selectedTime.second)}`
+            : `今天: ${new Date().getFullYear()}/${pad(new Date().getMonth() + 1)}/${pad(new Date().getDate())}`
+          }
+        </span>
+        <div className="flex gap-1">
+          <button
+            onClick={handleToday}
+            className="px-1.5 py-0.5 text-primary-600 hover:bg-primary-50 rounded"
+          >
+            {type === 'time' ? '现在' : '今天'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // 计算文本显示宽度
@@ -104,6 +704,7 @@ const VirtualDataTable = memo(function VirtualDataTable({
   const [editingCell, setEditingCell] = useState<{ row: number; col: string } | null>(null)
   const [editValue, setEditValue] = useState<string>('')
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; row: number; col: string } | null>(null)
+  const [datePickerPos, setDatePickerPos] = useState<{ top: number; left: number } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   
   const [searchQuery, setSearchQuery] = useState('')
@@ -141,14 +742,26 @@ const VirtualDataTable = memo(function VirtualDataTable({
     }), 
   [columns, pinnedColumns])
 
-  // 计算列宽 - 只在数据变化时计算
-  const columnWidths = useMemo(() => {
+  // 列宽状态
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>({})
+  const [resizingCol, setResizingCol] = useState<string | null>(null)
+  const resizeStartX = useRef(0)
+  const resizeStartWidth = useRef(0)
+  
+  // 初始化列宽 - 只在列变化时计算
+  useEffect(() => {
     const widths: Record<string, number> = {}
     const MIN_WIDTH = 70
     const MAX_WIDTH = 350
     const PADDING = 24
     
     for (const col of sortedColumns) {
+      // 如果已经有用户设置的宽度，保持不变
+      if (columnWidths[col.name]) {
+        widths[col.name] = columnWidths[col.name]
+        continue
+      }
+      
       let headerWidth = estimateTextWidth(col.name) + PADDING + 20
       if (showColumnInfo && col.type) {
         headerWidth = Math.max(headerWidth, estimateTextWidth(col.type) + PADDING)
@@ -169,8 +782,46 @@ const VirtualDataTable = memo(function VirtualDataTable({
       widths[col.name] = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.ceil(Math.max(headerWidth, maxDataWidth + PADDING))))
     }
     
-    return widths
-  }, [sortedColumns, data, showColumnInfo])
+    setColumnWidths(widths)
+  }, [sortedColumns.map(c => c.name).join(','), showColumnInfo])
+  
+  // 列宽拖动处理
+  const handleResizeStart = useCallback((colName: string, e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setResizingCol(colName)
+    resizeStartX.current = e.clientX
+    resizeStartWidth.current = columnWidths[colName] || 100
+  }, [columnWidths])
+  
+  useEffect(() => {
+    if (!resizingCol) return
+    
+    // 添加全局拖动样式
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    
+    const handleMouseMove = (e: MouseEvent) => {
+      const diff = e.clientX - resizeStartX.current
+      const newWidth = Math.max(50, Math.min(600, resizeStartWidth.current + diff))
+      setColumnWidths(prev => ({ ...prev, [resizingCol]: newWidth }))
+    }
+    
+    const handleMouseUp = () => {
+      setResizingCol(null)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+  }, [resizingCol])
 
   // 计算固定列偏移
   const pinnedLeftOffsets = useMemo(() => {
@@ -290,6 +941,10 @@ const VirtualDataTable = memo(function VirtualDataTable({
   const handleCellMouseDown = useCallback((actualRowIndex: number, colName: string, e: React.MouseEvent) => {
     if (e.button !== 0) return
     
+    // 确保容器获得焦点
+    setIsFocused(true)
+    containerRef.current?.focus()
+    
     const cellKey = `${actualRowIndex}-${colName}`
     
     if (e.shiftKey && activeCell) {
@@ -316,12 +971,24 @@ const VirtualDataTable = memo(function VirtualDataTable({
     }
   }, [isSelecting, selectionStart, getSelectedCellsFromRange])
 
+  // 用于跟踪是否刚结束拖动选择（防止拖动释放时清空选择，但单击应该清空）
+  const justFinishedDraggingRef = useRef(false)
+  
   // 框选结束
   useEffect(() => {
-    const handleMouseUp = () => setIsSelecting(false)
+    const handleMouseUp = () => {
+      // 只有真正进行了拖动选择（选择了多个单元格）才标记
+      if (isSelecting && selectedCells.size > 1) {
+        justFinishedDraggingRef.current = true
+        setTimeout(() => {
+          justFinishedDraggingRef.current = false
+        }, 50)
+      }
+      setIsSelecting(false)
+    }
     window.addEventListener('mouseup', handleMouseUp)
     return () => window.removeEventListener('mouseup', handleMouseUp)
-  }, [])
+  }, [isSelecting, selectedCells.size])
 
   // 搜索导航
   const jumpToMatch = useCallback((index: number) => {
@@ -447,7 +1114,42 @@ const VirtualDataTable = memo(function VirtualDataTable({
     }
     
     const text = lines.join('\n')
-    await navigator.clipboard.writeText(text)
+    
+    // 尝试使用 navigator.clipboard，如果失败则使用回退方案
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        // 回退方案：使用 textarea + execCommand
+        const textarea = document.createElement('textarea')
+        textarea.value = text
+        textarea.style.position = 'fixed'
+        textarea.style.left = '-9999px'
+        textarea.style.top = '-9999px'
+        document.body.appendChild(textarea)
+        textarea.focus()
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      }
+    } catch (err) {
+      // 回退方案
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.style.position = 'fixed'
+      textarea.style.left = '-9999px'
+      textarea.style.top = '-9999px'
+      document.body.appendChild(textarea)
+      textarea.focus()
+      textarea.select()
+      try {
+        document.execCommand('copy')
+      } catch (e) {
+        console.error('复制失败:', e)
+      }
+      document.body.removeChild(textarea)
+    }
+    
     return { rows: sortedRows.length, cols: sortedColIndices.length }
   }, [selectedCells, data, sortedColumns, getColIndex])
 
@@ -455,7 +1157,15 @@ const VirtualDataTable = memo(function VirtualDataTable({
   const pasteToSelectedCells = useCallback(async () => {
     if (!activeCell || !editable) return
     
-    const text = await navigator.clipboard.readText()
+    let text = ''
+    try {
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        text = await navigator.clipboard.readText()
+      }
+    } catch (err) {
+      console.error('读取剪贴板失败:', err)
+      return
+    }
     if (!text) return
     
     // 解析粘贴的数据（制表符分隔列，换行符分隔行）
@@ -589,8 +1299,20 @@ const VirtualDataTable = memo(function VirtualDataTable({
       if (e.key === 'Enter' && isFocused && !editingCell && activeCell && editable) {
         e.preventDefault()
         const value = data[activeCell.row]?.[activeCell.col]
+        const col = sortedColumns.find(c => c.name === activeCell.col)
+        const inputType = getInputType(col?.type || '')
         setEditingCell({ row: activeCell.row, col: activeCell.col })
-        setEditValue(value === null ? '' : String(value))
+        setEditValue(getEditValue(value, col?.type || ''))
+        
+        // 日期类型自动打开选择器
+        if (inputType !== 'text') {
+          // 需要获取单元格位置来定位选择器
+          const cellEl = containerRef.current?.querySelector(`[data-row="${activeCell.row}"][data-col="${activeCell.col}"]`) as HTMLElement
+          if (cellEl) {
+            const rect = cellEl.getBoundingClientRect()
+            setDatePickerPos({ top: rect.bottom + 4, left: rect.left })
+          }
+        }
         setTimeout(() => inputRef.current?.focus(), 0)
       }
       // Delete 或 Backspace 清空单元格
@@ -600,9 +1322,22 @@ const VirtualDataTable = memo(function VirtualDataTable({
       }
       // 直接输入进入编辑模式（可打印字符）
       if (isFocused && !editingCell && activeCell && editable && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const col = sortedColumns.find(c => c.name === activeCell.col)
+        const inputType = getInputType(col?.type || '')
+        
         e.preventDefault()
         setEditingCell({ row: activeCell.row, col: activeCell.col })
         setEditValue(e.key) // 直接用输入的字符作为初始值
+        
+        // 日期类型自动打开选择器
+        if (inputType !== 'text') {
+          const cellEl = containerRef.current?.querySelector(`[data-row="${activeCell.row}"][data-col="${activeCell.col}"]`) as HTMLElement
+          if (cellEl) {
+            const rect = cellEl.getBoundingClientRect()
+            setDatePickerPos({ top: rect.bottom + 4, left: rect.left })
+          }
+        }
+        
         setTimeout(() => {
           const input = inputRef.current
           if (input) {
@@ -691,6 +1426,8 @@ const VirtualDataTable = memo(function VirtualDataTable({
         ref={containerRef} 
         className="navi-scroll-container"
         onClick={(e) => {
+          // 如果刚结束拖动选择，不清空选择
+          if (justFinishedDraggingRef.current) return
           if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains('navi-body')) {
             clearSelection()
           }
@@ -714,8 +1451,7 @@ const VirtualDataTable = memo(function VirtualDataTable({
             return (
               <div 
                 key={col.name}
-                onClick={() => togglePin(col.name)}
-                className={`navi-header-cell ${isPinned ? 'pinned' : ''}`}
+                className={`navi-header-cell ${isPinned ? 'pinned' : ''} ${resizingCol === col.name ? 'resizing' : ''}`}
                 style={{ 
                   width: colWidth,
                   minWidth: colWidth,
@@ -726,7 +1462,7 @@ const VirtualDataTable = memo(function VirtualDataTable({
                 }}
                 title={isPinned ? `取消固定 ${col.name}` : `固定 ${col.name}`}
               >
-                <div className="navi-header-content">
+                <div className="navi-header-content" onClick={() => togglePin(col.name)}>
                   <div className="navi-header-row">
                     <span className="navi-col-name">{col.name}</span>
                     {showColumnInfo && col.key === 'PRI' && <Key size={10} className="text-amber-500" />}
@@ -741,6 +1477,11 @@ const VirtualDataTable = memo(function VirtualDataTable({
                     <div className="navi-col-comment" title={col.comment}>{col.comment}</div>
                   )}
                 </div>
+                {/* 列宽拖动手柄 */}
+                <div 
+                  className="navi-resize-handle"
+                  onMouseDown={(e) => handleResizeStart(col.name, e)}
+                />
               </div>
             )
           })}
@@ -751,6 +1492,8 @@ const VirtualDataTable = memo(function VirtualDataTable({
           className="navi-body" 
           style={{ height: Math.max(totalHeight, containerHeight), minWidth: totalWidth }}
           onClick={(e) => {
+            // 如果刚结束拖动选择，不清空选择
+            if (justFinishedDraggingRef.current) return
             if (e.target === e.currentTarget) clearSelection()
           }}
         >
@@ -844,6 +1587,8 @@ const VirtualDataTable = memo(function VirtualDataTable({
                     return (
                       <div
                         key={col.name}
+                        data-row={actualRowIndex}
+                        data-col={col.name}
                         className="navi-cell"
                         style={{
                           background: bgColor,
@@ -860,10 +1605,19 @@ const VirtualDataTable = memo(function VirtualDataTable({
                         }}
                         onMouseDown={(e) => handleCellMouseDown(actualRowIndex, col.name, e)}
                         onMouseEnter={() => handleCellMouseEnter(actualRowIndex, col.name)}
-                        onDoubleClick={() => {
+                        onDoubleClick={(e) => {
                           if (editable) {
+                            const inputType = getInputType(col.type || '')
                             setEditingCell({ row: actualRowIndex, col: col.name })
-                            setEditValue(value === null ? '' : String(value))
+                            setEditValue(getEditValue(value, col.type || ''))
+                            
+                            // 日期类型自动打开选择器
+                            if (inputType !== 'text') {
+                              const rect = e.currentTarget.getBoundingClientRect()
+                              setDatePickerPos({ top: rect.bottom + 4, left: rect.left })
+                            } else {
+                              setDatePickerPos(null)
+                            }
                             setTimeout(() => inputRef.current?.focus(), 0)
                           }
                         }}
@@ -878,97 +1632,157 @@ const VirtualDataTable = memo(function VirtualDataTable({
                         }}
                         title={displayValue || ''}
                       >
-                        {isEditing ? (
-                          <input
-                            ref={inputRef}
-                            type="text"
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onBlur={() => {
-                              if (editValue !== (value === null ? '' : String(value))) {
-                                onCellChange?.(actualRowIndex, col.name, editValue === '' ? null : editValue)
-                              }
-                              setEditingCell(null)
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                // 保存当前单元格
-                                if (editValue !== (value === null ? '' : String(value))) {
-                                  onCellChange?.(actualRowIndex, col.name, editValue === '' ? null : editValue)
-                                }
-                                setEditingCell(null)
-                                // 移动到下一行同列
-                                const newRow = Math.min(actualRowIndex + 1, data.length - 1)
-                                setActiveCell({ row: newRow, col: col.name })
-                                setSelectedCells(new Set([`${newRow}-${col.name}`]))
-                              } else if (e.key === 'Tab') {
-                                e.preventDefault()
-                                // 保存当前单元格
-                                if (editValue !== (value === null ? '' : String(value))) {
-                                  onCellChange?.(actualRowIndex, col.name, editValue === '' ? null : editValue)
-                                }
-                                // 计算下一个单元格位置
-                                const currentColIndex = getColIndex(col.name)
-                                let nextRow = actualRowIndex
-                                let nextColIndex = e.shiftKey ? currentColIndex - 1 : currentColIndex + 1
-                                
-                                if (!e.shiftKey) {
-                                  if (nextColIndex >= sortedColumns.length) {
-                                    nextColIndex = 0
-                                    nextRow = actualRowIndex + 1
-                                    if (nextRow >= data.length) {
-                                      nextRow = data.length - 1
-                                      nextColIndex = sortedColumns.length - 1
+                        {isEditing ? ((() => {
+                          const inputType = getInputType(col.type || '')
+                          const originalEditValue = getEditValue(value, col.type || '')
+                          
+                          const saveValue = () => {
+                            const convertedValue = fromInputValue(editValue, inputType)
+                            if (editValue !== originalEditValue) {
+                              onCellChange?.(actualRowIndex, col.name, convertedValue)
+                            }
+                          }
+                          
+                          // 对于日期/时间类型，显示编辑状态（与非编辑状态样式一致）
+                          if (inputType !== 'text') {
+                            return (
+                              <div className="navi-date-cell-edit">
+                                <Calendar size={12} className="navi-date-icon" />
+                                <input
+                                  ref={inputRef}
+                                  type="text"
+                                  value={editValue}
+                                  onChange={(e) => setEditValue(e.target.value)}
+                                  onBlur={() => {
+                                    if (!datePickerPos) {
+                                      const normalized = parseAndNormalizeDateInput(editValue, inputType)
+                                      if (normalized !== editValue) {
+                                        setEditValue(normalized)
+                                      }
+                                      saveValue()
+                                      setEditingCell(null)
                                     }
-                                  }
-                                } else {
-                                  if (nextColIndex < 0) {
-                                    nextColIndex = sortedColumns.length - 1
-                                    nextRow = actualRowIndex - 1
-                                    if (nextRow < 0) {
-                                      nextRow = 0
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      const normalized = parseAndNormalizeDateInput(editValue, inputType)
+                                      setEditValue(normalized)
+                                      saveValue()
+                                      setEditingCell(null)
+                                      setDatePickerPos(null)
+                                      const newRow = Math.min(actualRowIndex + 1, data.length - 1)
+                                      setActiveCell({ row: newRow, col: col.name })
+                                      setSelectedCells(new Set([`${newRow}-${col.name}`]))
+                                    } else if (e.key === 'Escape') {
+                                      setEditingCell(null)
+                                      setDatePickerPos(null)
+                                    }
+                                  }}
+                                  onClick={(e) => e.stopPropagation()}
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                  placeholder={inputType === 'date' ? 'YYYY/MM/DD' : inputType === 'time' ? 'HH:MM:SS' : 'YYYY/MM/DD HH:MM:SS'}
+                                  className="navi-date-input-field"
+                                  autoFocus
+                                />
+                              </div>
+                            )
+                          }
+                          
+                          return (
+                            <input
+                              ref={inputRef}
+                              type="text"
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              onBlur={() => {
+                                saveValue()
+                                setEditingCell(null)
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  // 保存当前单元格
+                                  saveValue()
+                                  setEditingCell(null)
+                                  // 移动到下一行同列
+                                  const newRow = Math.min(actualRowIndex + 1, data.length - 1)
+                                  setActiveCell({ row: newRow, col: col.name })
+                                  setSelectedCells(new Set([`${newRow}-${col.name}`]))
+                                } else if (e.key === 'Tab') {
+                                  e.preventDefault()
+                                  // 保存当前单元格
+                                  saveValue()
+                                  // 计算下一个单元格位置
+                                  const currentColIndex = getColIndex(col.name)
+                                  let nextRow = actualRowIndex
+                                  let nextColIndex = e.shiftKey ? currentColIndex - 1 : currentColIndex + 1
+                                  
+                                  if (!e.shiftKey) {
+                                    if (nextColIndex >= sortedColumns.length) {
                                       nextColIndex = 0
+                                      nextRow = actualRowIndex + 1
+                                      if (nextRow >= data.length) {
+                                        nextRow = data.length - 1
+                                        nextColIndex = sortedColumns.length - 1
+                                      }
+                                    }
+                                  } else {
+                                    if (nextColIndex < 0) {
+                                      nextColIndex = sortedColumns.length - 1
+                                      nextRow = actualRowIndex - 1
+                                      if (nextRow < 0) {
+                                        nextRow = 0
+                                        nextColIndex = 0
+                                      }
                                     }
                                   }
+                                  
+                                  const nextColName = sortedColumns[nextColIndex]?.name
+                                  if (nextColName) {
+                                    // 直接切换到下一个单元格的编辑状态
+                                    const nextCol = sortedColumns[nextColIndex]
+                                    const nextValue = data[nextRow]?.[nextColName]
+                                    setEditingCell({ row: nextRow, col: nextColName })
+                                    setEditValue(getEditValue(nextValue, nextCol?.type || ''))
+                                    setActiveCell({ row: nextRow, col: nextColName })
+                                    setSelectedCells(new Set([`${nextRow}-${nextColName}`]))
+                                    setTimeout(() => inputRef.current?.focus(), 0)
+                                  }
+                                } else if (e.key === 'Escape') {
+                                  setEditingCell(null)
+                                } else if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+                                  e.preventDefault()
+                                  // 保存当前单元格
+                                  saveValue()
+                                  setEditingCell(null)
+                                  // 触发保存
+                                  onSave?.()
                                 }
-                                
-                                const nextColName = sortedColumns[nextColIndex]?.name
-                                if (nextColName) {
-                                  // 直接切换到下一个单元格的编辑状态
-                                  const nextValue = data[nextRow]?.[nextColName]
-                                  setEditingCell({ row: nextRow, col: nextColName })
-                                  setEditValue(nextValue === null ? '' : String(nextValue))
-                                  setActiveCell({ row: nextRow, col: nextColName })
-                                  setSelectedCells(new Set([`${nextRow}-${nextColName}`]))
-                                  setTimeout(() => inputRef.current?.focus(), 0)
-                                }
-                              } else if (e.key === 'Escape') {
-                                setEditingCell(null)
-                              } else if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-                                e.preventDefault()
-                                // 保存当前单元格
-                                if (editValue !== (value === null ? '' : String(value))) {
-                                  onCellChange?.(actualRowIndex, col.name, editValue === '' ? null : editValue)
-                                }
-                                setEditingCell(null)
-                                // 触发保存
-                                onSave?.()
-                              }
-                            }}
-                            onClick={(e) => e.stopPropagation()}
-                            onMouseDown={(e) => e.stopPropagation()}
-                            className="navi-cell-input"
-                            autoFocus
-                          />
-                        ) : value === null ? (
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              className="navi-cell-input"
+                              autoFocus
+                            />
+                          )
+                        })()) : value === null ? (
                           <span className="navi-null">NULL</span>
                         ) : value === '' ? (
                           <span className="navi-empty"></span>
                         ) : typeof value === 'object' ? (
                           <span className="navi-json">{displayValue}</span>
-                        ) : (
-                          <span className="navi-value">{displayValue}</span>
-                        )}
+                        ) : (() => {
+                          // 判断是否是日期类型字段
+                          const inputType = getInputType(col.type || '')
+                          if (inputType !== 'text') {
+                            return (
+                              <span className="navi-date-cell">
+                                <Calendar size={12} className="navi-date-icon" />
+                                <span className="navi-date-text">{displayValue}</span>
+                              </span>
+                            )
+                          }
+                          return <span className="navi-value">{displayValue}</span>
+                        })()}
                       </div>
                     )
                   })}
@@ -976,6 +1790,53 @@ const VirtualDataTable = memo(function VirtualDataTable({
               )
             })}
           </div>
+          
+          {/* 空白填充行 - 当数据不够填满容器时 */}
+          {(() => {
+            const dataHeight = data.length * rowHeight
+            const emptyRowsNeeded = Math.max(0, Math.ceil((containerHeight - dataHeight) / rowHeight))
+            if (emptyRowsNeeded <= 0) return null
+            
+            return Array.from({ length: emptyRowsNeeded }, (_, i) => (
+              <div 
+                key={`empty-${i}`}
+                className="navi-row empty-row"
+                style={{ height: rowHeight }}
+                onClick={() => {
+                  // 点击空白行清空选择
+                  if (!justFinishedDraggingRef.current) {
+                    clearSelection()
+                  }
+                }}
+              >
+                {editable && (
+                  <div 
+                    className="navi-row-number empty"
+                    style={{ width: rowNumberWidth, height: rowHeight }}
+                  />
+                )}
+                {sortedColumns.map((col) => {
+                  const isPinned = pinnedColumns.has(col.name)
+                  const colWidth = columnWidths[col.name] || 100
+                  return (
+                    <div
+                      key={col.name}
+                      className="navi-cell empty"
+                      style={{
+                        position: isPinned ? 'sticky' : 'relative',
+                        left: isPinned ? pinnedLeftOffsets[col.name] : 'auto',
+                        width: colWidth,
+                        minWidth: colWidth,
+                        maxWidth: colWidth,
+                        height: rowHeight,
+                        zIndex: isPinned ? 10 : 1,
+                      }}
+                    />
+                  )
+                })}
+              </div>
+            ))
+          })()}
         </div>
         
         {data.length === 0 && (
@@ -1104,6 +1965,42 @@ const VirtualDataTable = memo(function VirtualDataTable({
           </div>
         </>
       )}
+      
+      {/* 日期时间选择器 */}
+      {editingCell && datePickerPos && (() => {
+        const col = sortedColumns.find(c => c.name === editingCell.col)
+        const inputType = getInputType(col?.type || '')
+        if (inputType === 'text') return null
+        
+        return (
+          <>
+            <div 
+              className="fixed inset-0 z-[9998]" 
+              onClick={() => {
+                setEditingCell(null)
+                setDatePickerPos(null)
+              }} 
+            />
+            <DateTimePicker
+              value={editValue}
+              type={inputType}
+              position={datePickerPos}
+              onChange={(val) => {
+                // 直接更新编辑值和单元格
+                setEditValue(val)
+                const convertedValue = fromInputValue(val, inputType)
+                if (onCellChange && editingCell) {
+                  onCellChange(editingCell.row, editingCell.col, convertedValue)
+                }
+              }}
+              onClose={() => {
+                setEditingCell(null)
+                setDatePickerPos(null)
+              }}
+            />
+          </>
+        )
+      })()}
     </div>
   )
 })

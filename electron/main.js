@@ -9,6 +9,7 @@ import initSqlJs from 'sql.js'
 import { MongoClient } from 'mongodb'
 import Redis from 'ioredis'
 import mssql from 'mssql'
+import Blowfish from 'blowfish-node'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -906,6 +907,217 @@ ipcMain.handle('file:read', async (event, filePath) => {
     return { success: false, error: e.message }
   }
 })
+
+// ============ Navicat 密码解密 ============
+// 支持 Navicat 11 和 Navicat 12+ 的密码解密
+ipcMain.handle('crypto:decryptNavicatPassword', async (event, encryptedPassword, version = 12) => {
+  try {
+    if (!encryptedPassword) return ''
+    
+    // 尝试所有解密方法
+    let result = ''
+    
+    // 首先尝试 Navicat 12+ (AES-128-CBC)
+    result = decryptNavicat12(encryptedPassword)
+    if (result && isPrintableString(result)) {
+      console.log('Navicat 12 AES 解密成功')
+      return result
+    }
+    
+    // 尝试 Navicat 11 (Blowfish/XOR)
+    result = decryptNavicat11(encryptedPassword)
+    if (result && isPrintableString(result)) {
+      console.log('Navicat 11 解密成功')
+      return result
+    }
+    
+    // 如果都失败，返回空字符串
+    console.warn('所有解密方法都失败，密码可能使用了不支持的加密方式')
+    return ''
+  } catch (e) {
+    console.error('Navicat 密码解密失败:', e.message)
+    return ''
+  }
+})
+
+// 检查字符串是否为可打印字符
+function isPrintableString(str) {
+  if (!str || str.length === 0) return false
+  // 检查是否包含合理的可打印字符
+  return /^[\x20-\x7E\u4e00-\u9fa5]+$/.test(str)
+}
+
+// Navicat 12+ AES-128-CBC 解密
+function decryptNavicat12(encryptedPassword) {
+  // Navicat 12 使用 AES-128-CBC
+  // 密钥: libcckeylibcckey (16 bytes)
+  // IV: 多种可能的格式
+  
+  try {
+    const encryptedBuffer = Buffer.from(encryptedPassword, 'hex')
+    
+    if (encryptedBuffer.length === 0) {
+      return ''
+    }
+    
+    // 尝试多种可能的密钥和 IV 组合
+    const attempts = [
+      // 组合 1: IV 作为 UTF-8 字符串
+      { key: 'libcckeylibcckey', iv: Buffer.from('d0288c8e24342312', 'utf8') },
+      // 组合 2: IV 重复两次的十六进制
+      { key: 'libcckeylibcckey', iv: Buffer.from('d0288c8e24342312d0288c8e24342312', 'hex') },
+      // 组合 3: 字节数组 IV
+      { key: 'libcckeylibcckey', iv: Buffer.from([0xD0, 0x28, 0x8C, 0x8E, 0x24, 0x34, 0x23, 0x12, 0xD0, 0x28, 0x8C, 0x8E, 0x24, 0x34, 0x23, 0x12]) },
+      // 组合 4: 全零 IV
+      { key: 'libcckeylibcckey', iv: Buffer.alloc(16, 0) },
+      // 组合 5: libcciv 作为 IV
+      { key: 'libcckeylibcckey', iv: Buffer.from('libcciv libcciv ', 'utf8') },
+      // 组合 6: 反向字节序
+      { key: 'libcckeylibcckey', iv: Buffer.from([0x12, 0x23, 0x34, 0x24, 0x8E, 0x8C, 0x28, 0xD0, 0x12, 0x23, 0x34, 0x24, 0x8E, 0x8C, 0x28, 0xD0]) },
+    ]
+    
+    for (const attempt of attempts) {
+      try {
+        const keyBuffer = Buffer.from(attempt.key, 'utf8')
+        const decipher = crypto.createDecipheriv('aes-128-cbc', keyBuffer, attempt.iv)
+        decipher.setAutoPadding(true)
+        
+        const decrypted = Buffer.concat([
+          decipher.update(encryptedBuffer),
+          decipher.final()
+        ])
+        
+        const result = decrypted.toString('utf8').replace(/\0+$/, '')
+        if (result && isPrintableString(result)) {
+          return result
+        }
+      } catch (e) {
+        // 继续尝试下一个组合
+      }
+      
+      // 尝试关闭自动填充
+      try {
+        const keyBuffer = Buffer.from(attempt.key, 'utf8')
+        const decipher = crypto.createDecipheriv('aes-128-cbc', keyBuffer, attempt.iv)
+        decipher.setAutoPadding(false)
+        
+        let decrypted = Buffer.concat([
+          decipher.update(encryptedBuffer),
+          decipher.final()
+        ])
+        
+        // 手动移除填充
+        const paddingLen = decrypted[decrypted.length - 1]
+        if (paddingLen > 0 && paddingLen <= 16) {
+          // 验证填充是否正确
+          let validPadding = true
+          for (let i = 0; i < paddingLen; i++) {
+            if (decrypted[decrypted.length - 1 - i] !== paddingLen) {
+              validPadding = false
+              break
+            }
+          }
+          if (validPadding) {
+            decrypted = decrypted.slice(0, -paddingLen)
+          }
+        }
+        
+        const result = decrypted.toString('utf8').replace(/\0+$/, '')
+        if (result && isPrintableString(result)) {
+          return result
+        }
+      } catch (e) {
+        // 继续尝试下一个组合
+      }
+    }
+    
+    return ''
+  } catch (e) {
+    return ''
+  }
+}
+
+// Navicat 11 解密 - 使用 Blowfish ECB
+function decryptNavicat11(encryptedPassword) {
+  try {
+    const encryptedBuffer = Buffer.from(encryptedPassword, 'hex')
+    
+    if (encryptedBuffer.length === 0) {
+      return ''
+    }
+    
+    // 方法 1: 使用 Blowfish ECB 模式
+    // Navicat 11 密钥是 SHA1("3DC5CA39") 的前 8 字节
+    const keyStr = '3DC5CA39'
+    const sha1Key = crypto.createHash('sha1').update(keyStr).digest()
+    const blowfishKey = sha1Key.slice(0, 8)
+    
+    try {
+      const bf = new Blowfish(blowfishKey, Blowfish.MODE.ECB, Blowfish.PADDING.NULL)
+      const decrypted = bf.decode(encryptedBuffer, Blowfish.TYPE.UINT8_ARRAY)
+      const result = Buffer.from(decrypted).toString('utf8').replace(/\0+$/, '')
+      if (result && isPrintableString(result)) {
+        console.log('Blowfish ECB 解密成功')
+        return result
+      }
+    } catch (e) {
+      // 继续尝试其他方法
+    }
+    
+    // 方法 2: 直接使用密钥字符串作为 Blowfish 密钥
+    try {
+      const bf = new Blowfish(keyStr, Blowfish.MODE.ECB, Blowfish.PADDING.NULL)
+      const decrypted = bf.decode(encryptedBuffer, Blowfish.TYPE.UINT8_ARRAY)
+      const result = Buffer.from(decrypted).toString('utf8').replace(/\0+$/, '')
+      if (result && isPrintableString(result)) {
+        console.log('Blowfish ECB (direct key) 解密成功')
+        return result
+      }
+    } catch (e) {
+      // 继续尝试其他方法
+    }
+    
+    // 方法 3: XOR 解密（作为后备）
+    const sha1Hash = crypto.createHash('sha1').update(keyStr).digest()
+    let result = Buffer.alloc(encryptedBuffer.length)
+    for (let i = 0; i < encryptedBuffer.length; i++) {
+      result[i] = encryptedBuffer[i] ^ sha1Hash[i % sha1Hash.length]
+    }
+    
+    let decrypted = result.toString('utf8').replace(/\0+$/, '')
+    if (decrypted && isPrintableString(decrypted)) {
+      return decrypted
+    }
+    
+    // 方法 4: Navicat 特定的 XOR 序列
+    result = navicatXorDecrypt(encryptedBuffer)
+    decrypted = result.toString('utf8').replace(/\0+$/, '')
+    if (decrypted && isPrintableString(decrypted)) {
+      return decrypted
+    }
+    
+    return ''
+  } catch (e) {
+    console.error('Navicat 11 解密错误:', e.message)
+    return ''
+  }
+}
+
+// Navicat 特定的 XOR 解密算法
+function navicatXorDecrypt(encryptedBuffer) {
+  // Navicat 使用特定的 XOR 序列
+  const xorKey = Buffer.from([
+    0x42, 0xCE, 0xB2, 0x71, 0xA5, 0xE4, 0x58, 0xB7,
+    0x4E, 0x13, 0xEA, 0x1C, 0x91, 0x67, 0xA3, 0x6D
+  ])
+  
+  const result = Buffer.alloc(encryptedBuffer.length)
+  for (let i = 0; i < encryptedBuffer.length; i++) {
+    result[i] = encryptedBuffer[i] ^ xorKey[i % xorKey.length]
+  }
+  
+  return result
+}
 
 // ============ 数据库连接辅助函数 ============
 async function createConnection(config) {

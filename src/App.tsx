@@ -5,6 +5,7 @@ import MainContent from './components/MainContent'
 import ConnectionModal from './components/ConnectionModal'
 import CreateDatabaseModal from './components/CreateDatabaseModal'
 import CreateTableModal from './components/CreateTableModal'
+import TableDesigner from './components/TableDesigner'
 import InputDialog from './components/InputDialog'
 import { Connection, QueryTab, DatabaseType, TableInfo, ColumnInfo, TableTab } from './types'
 import api from './lib/electron-api'
@@ -21,6 +22,8 @@ function App() {
   const [createDbConnectionId, setCreateDbConnectionId] = useState<string | null>(null)
   const [showCreateTableModal, setShowCreateTableModal] = useState(false)
   const [createTableContext, setCreateTableContext] = useState<{ connectionId: string; database: string } | null>(null)
+  const [showTableDesigner, setShowTableDesigner] = useState(false)
+  const [tableDesignerContext, setTableDesignerContext] = useState<{ connectionId: string; database: string; tableName?: string; mode: 'create' | 'edit' } | null>(null)
   const [inputDialog, setInputDialog] = useState<{
     isOpen: boolean
     title: string
@@ -50,6 +53,7 @@ function App() {
   const {
     databasesMap, setDatabasesMap,
     loadingDbSet, setLoadingDbSet,
+    loadingConnectionsSet,
     fetchDatabases
   } = useDatabaseOperations(showNotification)
 
@@ -77,7 +81,11 @@ function App() {
   const handleConnect = useCallback(async (conn: Connection) => {
     if (connectedIds.has(conn.id)) return
     try {
-      await api.connect(conn)
+      const result = await api.connect(conn)
+      if (!result.success) {
+        showNotification('error', '连接失败：' + result.message)
+        return
+      }
       setConnectedIds(prev => new Set(prev).add(conn.id))
       setActiveConnection(conn.id)
       await fetchDatabases(conn.id)
@@ -101,12 +109,27 @@ function App() {
         next.delete(id)
         return next
       })
+      // 关闭该连接的所有标签页
+      setTabs(prev => {
+        const remainingTabs = prev.filter(tab => {
+          // TableTab 有 connectionId
+          if ('connectionId' in tab && tab.connectionId === id) {
+            return false
+          }
+          return true
+        })
+        // 如果当前活跃标签页被关闭，切换到第一个标签页或主页
+        if (activeTab && !remainingTabs.find(t => t.id === activeTab)) {
+          setActiveTab(remainingTabs.length > 0 ? remainingTabs[0].id : 'welcome')
+        }
+        return remainingTabs
+      })
       if (activeConnection === id) setActiveConnection(null)
       showNotification('info', '连接已断开')
     } catch (err) {
       showNotification('error', '断开失败：' + (err as Error).message)
     }
-  }, [activeConnection, setConnectedIds, setDatabasesMap, showNotification])
+  }, [activeConnection, activeTab, setConnectedIds, setDatabasesMap, setTabs, setActiveTab, showNotification])
 
   // 选择数据库
   const handleSelectDatabase = useCallback(async (db: string, connectionId: string) => {
@@ -126,40 +149,62 @@ function App() {
     }
   }, [fetchTables, fetchColumns, tablesMap, setLoadingDbSet])
 
+  // 切换连接（在查询界面使用，会清空数据库选择）
+  const handleConnectionChange = useCallback((connectionId: string) => {
+    // 如果切换到不同的连接，清空数据库选择
+    if (connectionId !== activeConnection) {
+      setSelectedDatabase(null)
+    }
+    setActiveConnection(connectionId)
+  }, [activeConnection])
+
   // 打开表
   const handleOpenTable = useCallback(async (connectionId: string, database: string, tableName: string) => {
-    const existingTab = tabs.find(t => 'tableName' in t && t.tableName === tableName && t.database === database)
+    const existingTab = tabs.find(t => 'tableName' in t && t.tableName === tableName && t.database === database && t.connectionId === connectionId)
     if (existingTab) {
       setActiveTab(existingTab.id)
       return
     }
 
     const newTabId = `table-${Date.now()}`
+    const pageSize = 100
+    
+    // 先创建标签页并显示（带 loading 状态）
+    const newTab: TableTab = {
+      id: newTabId,
+      tableName,
+      database,
+      connectionId,
+      columns: [],
+      data: [],
+      total: 0,
+      page: 1,
+      pageSize,
+      pendingChanges: new Map(),
+      deletedRows: new Set(),
+      newRows: []
+    }
+    setTabs(prev => [...prev, newTab])
+    setActiveTab(newTabId)
     setLoadingTables(prev => new Set(prev).add(newTabId))
     
+    // 然后异步加载数据
     try {
       const cols = await api.getTableColumns(connectionId, database, tableName)
-      const pageSize = 100
-      const { rows, total } = await api.getTableData(connectionId, database, tableName, 1, pageSize)
+      const { data, total } = await api.getTableData(connectionId, database, tableName, 1, pageSize)
       
-      const newTab: TableTab = {
-        id: newTabId,
-        tableName,
-        database,
-        connectionId,
+      // 更新标签页数据
+      setTabs(prev => prev.map(t => t.id === newTabId ? {
+        ...t,
         columns: cols,
-        data: rows,
-        total,
-        page: 1,
-        pageSize,
-        pendingChanges: new Map(),
-        deletedRows: new Set(),
-        newRows: []
-      }
-      setTabs(prev => [...prev, newTab])
-      setActiveTab(newTabId)
+        data: data || [],
+        total
+      } : t))
     } catch (err) {
       showNotification('error', '打开表失败：' + (err as Error).message)
+      // 加载失败时移除标签页
+      setTabs(prev => prev.filter(t => t.id !== newTabId))
+      setActiveTab('welcome')
     } finally {
       setLoadingTables(prev => {
         const next = new Set(prev)
@@ -176,8 +221,8 @@ function App() {
 
     setLoadingTables(prev => new Set(prev).add(tabId))
     try {
-      const { rows, total } = await api.getTableData(tab.connectionId, tab.database, tab.tableName, page, tab.pageSize)
-      setTabs(prev => prev.map(t => t.id === tabId ? { ...t, data: rows, total, page, pendingChanges: new Map(), deletedRows: new Set(), newRows: [] } : t))
+      const { data, total } = await api.getTableData(tab.connectionId, tab.database, tab.tableName, page, tab.pageSize)
+      setTabs(prev => prev.map(t => t.id === tabId ? { ...t, data: data || [], total, page, pendingChanges: new Map(), deletedRows: new Set(), newRows: [] } : t))
     } catch (err) {
       showNotification('error', '加载数据失败')
     } finally {
@@ -193,13 +238,22 @@ function App() {
   const handleUpdateTableCell = useCallback((tabId: string, rowIndex: number, colName: string, value: any) => {
     setTabs(prev => prev.map(t => {
       if (t.id !== tabId || !('tableName' in t)) return t
-      const tab = t as TableTab & { pendingChanges: Map<string, any> }
+      const tab = t as TableTab & { pendingChanges: Map<string, any>; data: any[] }
+      
+      // 更新 pendingChanges
       const changes = new Map(tab.pendingChanges)
       const rowKey = String(rowIndex)
       const rowChanges = changes.get(rowKey) || {}
       rowChanges[colName] = value
       changes.set(rowKey, rowChanges)
-      return { ...t, pendingChanges: changes }
+      
+      // 同时更新 data 数组以便 UI 立即显示更新
+      const newData = [...tab.data]
+      if (newData[rowIndex]) {
+        newData[rowIndex] = { ...newData[rowIndex], [colName]: value }
+      }
+      
+      return { ...t, data: newData, pendingChanges: changes }
     }))
   }, [setTabs])
 
@@ -330,10 +384,16 @@ function App() {
 
   // 新建查询
   const handleNewQuery = useCallback(() => {
-    const newTab: QueryTab = { id: `query-${Date.now()}`, title: `查询 ${tabs.filter(t => !('tableName' in t)).length + 1}`, sql: '', results: null }
+    const newTab: QueryTab = { 
+      id: `query-${Date.now()}`, 
+      title: `查询 ${tabs.filter(t => !('tableName' in t)).length + 1}`, 
+      sql: '', 
+      connectionId: activeConnection || undefined,
+      results: null 
+    }
     setTabs(prev => [...prev, newTab])
     setActiveTab(newTab.id)
-  }, [tabs, setTabs, setActiveTab])
+  }, [tabs, setTabs, setActiveTab, activeConnection])
 
   // 执行查询
   const handleRunQuery = useCallback(async (tabId: string, sql: string) => {
@@ -431,10 +491,10 @@ function App() {
     }
   }, [fetchDatabases, showNotification])
 
-  // 创建表
+  // 创建表 - 使用 TableDesigner
   const handleCreateTable = useCallback((connectionId: string, database: string) => {
-    setCreateTableContext({ connectionId, database })
-    setShowCreateTableModal(true)
+    setTableDesignerContext({ connectionId, database, mode: 'create' })
+    setShowTableDesigner(true)
   }, [])
 
   // 删除表
@@ -508,10 +568,11 @@ function App() {
     showNotification('success', '已刷新')
   }, [fetchTables, showNotification])
 
-  // 设计表
-  const handleDesignTable = useCallback(async (connectionId: string, database: string, table: string) => {
-    showNotification('info', '表设计器开发中...')
-  }, [showNotification])
+  // 设计表 - 使用 TableDesigner
+  const handleDesignTable = useCallback((connectionId: string, database: string, table: string) => {
+    setTableDesignerContext({ connectionId, database, tableName: table, mode: 'edit' })
+    setShowTableDesigner(true)
+  }, [])
 
   // 键盘快捷键
   useEffect(() => {
@@ -537,6 +598,7 @@ function App() {
           tablesMap={tablesMap}
           selectedDatabase={selectedDatabase}
           loadingDbSet={loadingDbSet}
+          loadingConnectionsSet={loadingConnectionsSet}
           onNewConnection={() => { setEditingConnection(null); setNewConnectionType(undefined); setShowConnectionModal(true) }}
           onSelectConnection={setActiveConnection}
           onConnect={handleConnect}
@@ -557,10 +619,16 @@ function App() {
           onDuplicateTable={handleDuplicateTable}
           onRefreshTables={handleRefreshTables}
           onDesignTable={handleDesignTable}
+          onFetchDatabases={fetchDatabases}
         />
         <MainContent
           tabs={tabs}
           activeTab={activeTab}
+          activeConnection={activeConnection}
+          selectedDatabase={selectedDatabase}
+          connections={connections}
+          connectedIds={connectedIds}
+          databasesMap={databasesMap}
           databases={databasesMap.get(activeConnection || '') || []}
           tables={tablesMap.get(selectedDatabase || '') || []}
           columns={columnsMap}
@@ -582,6 +650,8 @@ function App() {
           onAddTableRow={handleAddTableRow}
           onUpdateNewRow={handleUpdateNewRow}
           onDeleteNewRow={handleDeleteNewRow}
+          onSelectConnection={handleConnectionChange}
+          onSelectDatabase={handleSelectDatabase}
           loadingTables={loadingTables}
         />
       </div>
@@ -633,6 +703,74 @@ function App() {
           if (createTableContext) await fetchTables(createTableContext.connectionId, createTableContext.database)
         }}
       />
+
+      {showTableDesigner && tableDesignerContext && (
+        <TableDesigner
+          isOpen={showTableDesigner}
+          mode={tableDesignerContext.mode}
+          database={tableDesignerContext.database}
+          tableName={tableDesignerContext.tableName}
+          connectionId={tableDesignerContext.connectionId}
+          dbType={connections.find(c => c.id === tableDesignerContext.connectionId)?.type || 'mysql'}
+          onClose={() => { setShowTableDesigner(false); setTableDesignerContext(null) }}
+          onSave={async (sql: string) => {
+            try {
+              await api.executeQuery(tableDesignerContext.connectionId, sql)
+              await fetchTables(tableDesignerContext.connectionId, tableDesignerContext.database)
+              showNotification('success', tableDesignerContext.mode === 'create' ? '表创建成功' : '表结构已更新')
+              return { success: true, message: '' }
+            } catch (err: any) {
+              return { success: false, message: err.message || '操作失败' }
+            }
+          }}
+          onGetTableInfo={tableDesignerContext.mode === 'edit' ? async () => {
+            const cols = await api.getTableColumns(tableDesignerContext.connectionId, tableDesignerContext.database, tableDesignerContext.tableName!)
+            return {
+              columns: cols.map((c, i) => ({
+                id: `col-${i}`,
+                name: c.name,
+                type: c.type.split('(')[0].toUpperCase(),
+                length: c.type.match(/\((\d+)/)?.[1] || '',
+                decimals: c.type.match(/,(\d+)\)/)?.[1] || '',
+                nullable: c.nullable,
+                primaryKey: c.key === 'PRI',
+                autoIncrement: c.extra?.includes('auto_increment') || false,
+                unsigned: c.type.includes('unsigned'),
+                zerofill: c.type.includes('zerofill'),
+                defaultValue: c.default || '',
+                comment: c.comment || '',
+                isVirtual: false,
+                virtualExpression: ''
+              })),
+              indexes: [],
+              foreignKeys: [],
+              options: { engine: 'InnoDB', charset: 'utf8mb4', collation: 'utf8mb4_general_ci', comment: '', autoIncrement: '', rowFormat: '' }
+            }
+          } : undefined}
+          onGetDatabases={async () => databasesMap.get(tableDesignerContext.connectionId) || []}
+          onGetTables={async (db) => {
+            // 如果缓存中有表列表，直接返回
+            const cached = tablesMap.get(db)
+            if (cached && cached.length > 0) {
+              return cached.map(t => t.name)
+            }
+            // 否则从 API 加载
+            try {
+              const tables = await api.getTables(tableDesignerContext.connectionId, db)
+              // 更新缓存
+              setTablesMap(prev => new Map(prev).set(db, tables))
+              return tables.map((t: any) => t.name || t)
+            } catch (err) {
+              console.error('Failed to load tables:', err)
+              return []
+            }
+          }}
+          onGetColumns={async (db, table) => {
+            const cols = await api.getTableColumns(tableDesignerContext.connectionId, db, table)
+            return cols.map(c => c.name)
+          }}
+        />
+      )}
 
       {inputDialog && (
         <InputDialog

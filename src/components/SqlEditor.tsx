@@ -716,7 +716,7 @@ export default function SqlEditor({ value, onChange, onRun, onSave, onOpen, onFo
       value={value}
       onChange={(v) => onChange(v || '')}
       onMount={handleEditorMount}
-      theme="vs-dark"
+      theme="vs"
       options={{
         minimap: { enabled: false },
         fontSize: 14,

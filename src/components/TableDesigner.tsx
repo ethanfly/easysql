@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { 
   X, Table2, Plus, Trash2, Key, ArrowUp, ArrowDown, Save, 
-  FileCode, Settings, Link2, List, Database, Play, Eye, GripVertical
+  FileCode, Settings, Link2, List, Database, Play, Eye, GripVertical,
+  Check, Search, ChevronDown
 } from 'lucide-react'
 
 // ============ 类型定义 ============
@@ -164,30 +165,44 @@ function SearchableSelect({ value, options, onChange, placeholder = '选择...',
   return (
     <div 
       ref={containerRef} 
-      className={`relative flex items-center justify-between cursor-pointer ${className}`}
+      className={`relative flex items-center justify-between cursor-pointer rounded-lg transition-all duration-200 ${className} ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-light-hover'}`}
       onClick={(e) => {
         e.stopPropagation()
         if (!disabled) setIsOpen(!isOpen)
       }}
     >
-      <span className={`text-xs ${selectedOption ? 'text-text-primary' : 'text-text-secondary'} ${disabled ? 'opacity-50' : ''}`}>
+      <span className={`text-sm font-medium ${selectedOption ? 'text-text-primary' : 'text-text-muted'}`}>
         {selectedOption?.label || placeholder}
       </span>
-      <span className="text-text-secondary text-[10px]">▼</span>
+      <ChevronDown size={14} className={`text-text-tertiary ml-2 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
       {isOpen && (
-        <div className="absolute z-50 top-full left-0 w-full min-w-[120px] mt-0.5 bg-metro-surface border border-metro-border shadow-lg max-h-48 overflow-hidden flex flex-col">
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            onClick={(e) => e.stopPropagation()}
-            placeholder="搜索..."
-            className="w-full h-7 px-2 bg-metro-hover border-b border-metro-border text-xs focus:outline-none"
-            autoFocus
-          />
-          <div className="overflow-auto flex-1">
+        <div className="absolute z-50 top-full left-0 w-full min-w-[160px] mt-1.5 bg-white border border-border-default 
+                        shadow-xl rounded-xl overflow-hidden flex flex-col animate-in fade-in slide-in-from-top-2 duration-200"
+             style={{ maxHeight: '280px' }}>
+          {/* 搜索框 */}
+          <div className="p-2.5 border-b border-border-light bg-gradient-to-b from-light-surface to-white">
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                placeholder="搜索..."
+                className="w-full h-9 pl-9 pr-3 bg-white border border-border-default rounded-lg text-sm text-text-primary 
+                           focus:outline-none focus:border-primary-400 focus:ring-2 focus:ring-primary-100 transition-all"
+                autoFocus
+              />
+            </div>
+          </div>
+          
+          {/* 选项列表 */}
+          <div className="overflow-auto flex-1 py-1.5" style={{ maxHeight: '220px' }}>
             {filteredOptions.length === 0 ? (
-              <div className="px-2 py-1.5 text-xs text-text-secondary">无匹配项</div>
+              <div className="px-4 py-6 text-sm text-text-muted text-center">
+                <div className="text-2xl mb-2">🔍</div>
+                无匹配项
+              </div>
             ) : (
               filteredOptions.map(opt => (
                 <div
@@ -198,10 +213,15 @@ function SearchableSelect({ value, options, onChange, placeholder = '选择...',
                     setIsOpen(false)
                     setSearch('')
                   }}
-                  className={`px-2 py-1.5 text-xs cursor-pointer hover:bg-metro-hover
-                    ${opt.value === value ? 'bg-accent-blue/20 text-accent-blue' : ''}`}
+                  className={`px-3 py-2 text-sm cursor-pointer flex items-center gap-2.5 mx-1.5 rounded-lg transition-all duration-150
+                    ${opt.value === value 
+                      ? 'bg-primary-50 text-primary-700 font-medium' 
+                      : 'text-text-primary hover:bg-light-hover'}`}
                 >
-                  {opt.label}
+                  {opt.value === value && (
+                    <Check size={14} className="text-primary-500" strokeWidth={2.5} />
+                  )}
+                  <span className={opt.value === value ? '' : 'ml-5'}>{opt.label}</span>
                 </div>
               ))
             )}
@@ -224,11 +244,19 @@ interface MultiSelectProps {
 function MultiSelect({ values, options, onChange, placeholder = '选择...', className = '' }: MultiSelectProps) {
   const [isOpen, setIsOpen] = useState(false)
   const [search, setSearch] = useState('')
+  const [tempValues, setTempValues] = useState<string[]>(values)
   const containerRef = useRef<HTMLDivElement>(null)
 
   const filteredOptions = options.filter(opt => 
     opt.label.toLowerCase().includes(search.toLowerCase())
   )
+
+  // 打开时同步当前值
+  useEffect(() => {
+    if (isOpen) {
+      setTempValues(values)
+    }
+  }, [isOpen, values])
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -242,11 +270,31 @@ function MultiSelect({ values, options, onChange, placeholder = '选择...', cla
   }, [])
 
   const toggleValue = (val: string) => {
-    if (values.includes(val)) {
-      onChange(values.filter(v => v !== val))
+    if (tempValues.includes(val)) {
+      setTempValues(tempValues.filter(v => v !== val))
     } else {
-      onChange([...values, val])
+      setTempValues([...tempValues, val])
     }
+  }
+
+  const handleConfirm = () => {
+    onChange(tempValues)
+    setIsOpen(false)
+    setSearch('')
+  }
+
+  const handleCancel = () => {
+    setTempValues(values)
+    setIsOpen(false)
+    setSearch('')
+  }
+
+  const handleSelectAll = () => {
+    setTempValues(filteredOptions.map(opt => opt.value))
+  }
+
+  const handleClearAll = () => {
+    setTempValues([])
   }
 
   return (
@@ -256,33 +304,70 @@ function MultiSelect({ values, options, onChange, placeholder = '选择...', cla
           e.stopPropagation()
           setIsOpen(!isOpen)
         }}
-        className="w-full min-h-[28px] px-2 py-1 bg-transparent border border-transparent hover:border-metro-border 
-                   text-xs flex items-center gap-1 flex-wrap cursor-pointer"
+        className="w-full min-h-[36px] px-3 py-1.5 bg-white/50 border border-border-light hover:border-primary-300 rounded-lg
+                   text-sm flex items-center gap-1.5 flex-wrap cursor-pointer transition-all duration-200
+                   hover:shadow-sm hover:bg-white"
       >
         {values.length === 0 ? (
-          <span className="text-text-secondary">{placeholder}</span>
+          <span className="text-text-muted">{placeholder}</span>
         ) : (
           values.map(v => (
-            <span key={v} className="bg-accent-blue/20 text-accent-blue px-1.5 py-0.5 rounded text-[10px]">
+            <span key={v} className="bg-gradient-to-r from-primary-100 to-primary-50 text-primary-700 px-2.5 py-1 rounded-md text-xs font-medium
+                                    border border-primary-200/50 shadow-sm">
               {v}
             </span>
           ))
         )}
+        <ChevronDown size={14} className={`ml-auto text-text-tertiary transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
       </div>
       {isOpen && (
-        <div className="absolute z-50 top-full left-0 w-full min-w-[150px] mt-0.5 bg-metro-surface border border-metro-border shadow-lg max-h-48 overflow-hidden flex flex-col">
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            onClick={(e) => e.stopPropagation()}
-            placeholder="搜索..."
-            className="w-full h-7 px-2 bg-metro-hover border-b border-metro-border text-xs focus:outline-none"
-            autoFocus
-          />
-          <div className="overflow-auto flex-1">
+        <div className="absolute z-50 top-full left-0 w-full min-w-[200px] mt-1.5 bg-white border border-border-default 
+                        shadow-xl rounded-xl overflow-hidden flex flex-col animate-in fade-in slide-in-from-top-2 duration-200"
+             style={{ maxHeight: '320px' }}>
+          {/* 搜索框 */}
+          <div className="p-2.5 border-b border-border-light bg-gradient-to-b from-light-surface to-white">
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                placeholder="搜索字段..."
+                className="w-full h-9 pl-9 pr-3 bg-white border border-border-default rounded-lg text-sm text-text-primary 
+                           focus:outline-none focus:border-primary-400 focus:ring-2 focus:ring-primary-100 transition-all"
+                autoFocus
+              />
+            </div>
+          </div>
+          
+          {/* 快捷操作 */}
+          <div className="px-2.5 py-2 border-b border-border-light flex items-center gap-2 bg-light-surface/50">
+            <button
+              onClick={(e) => { e.stopPropagation(); handleSelectAll() }}
+              className="text-xs text-primary-600 hover:text-primary-700 font-medium px-2 py-1 rounded hover:bg-primary-50 transition-colors"
+            >
+              全选
+            </button>
+            <span className="text-border-default">|</span>
+            <button
+              onClick={(e) => { e.stopPropagation(); handleClearAll() }}
+              className="text-xs text-text-tertiary hover:text-text-secondary font-medium px-2 py-1 rounded hover:bg-light-hover transition-colors"
+            >
+              清空
+            </button>
+            <span className="ml-auto text-xs text-text-muted">
+              已选 <span className="text-primary-600 font-medium">{tempValues.length}</span> 项
+            </span>
+          </div>
+
+          {/* 选项列表 */}
+          <div className="overflow-auto flex-1 py-1.5" style={{ maxHeight: '180px' }}>
             {filteredOptions.length === 0 ? (
-              <div className="px-2 py-1.5 text-xs text-text-secondary">无匹配项</div>
+              <div className="px-4 py-6 text-sm text-text-muted text-center">
+                <div className="text-2xl mb-2">🔍</div>
+                无匹配字段
+              </div>
             ) : (
               filteredOptions.map(opt => (
                 <div
@@ -291,19 +376,41 @@ function MultiSelect({ values, options, onChange, placeholder = '选择...', cla
                     e.stopPropagation()
                     toggleValue(opt.value)
                   }}
-                  className={`px-2 py-1.5 text-xs cursor-pointer hover:bg-metro-hover flex items-center gap-2
-                    ${values.includes(opt.value) ? 'bg-accent-blue/10' : ''}`}
+                  className={`px-3 py-2 text-sm cursor-pointer flex items-center gap-3 mx-1.5 rounded-lg transition-all duration-150
+                    ${tempValues.includes(opt.value) 
+                      ? 'bg-primary-50 text-primary-700 hover:bg-primary-100' 
+                      : 'text-text-primary hover:bg-light-hover'}`}
                 >
-                  <input
-                    type="checkbox"
-                    checked={values.includes(opt.value)}
-                    onChange={() => {}}
-                    className="w-3 h-3 accent-accent-blue"
-                  />
-                  {opt.label}
+                  <div className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all duration-150
+                    ${tempValues.includes(opt.value) 
+                      ? 'bg-primary-500 border-primary-500' 
+                      : 'border-border-default bg-white'}`}>
+                    {tempValues.includes(opt.value) && (
+                      <Check size={12} className="text-white" strokeWidth={3} />
+                    )}
+                  </div>
+                  <span className="font-medium">{opt.label}</span>
                 </div>
               ))
             )}
+          </div>
+
+          {/* 底部操作按钮 */}
+          <div className="px-3 py-2.5 border-t border-border-light bg-gradient-to-t from-light-surface to-white flex items-center justify-end gap-2">
+            <button
+              onClick={(e) => { e.stopPropagation(); handleCancel() }}
+              className="px-4 py-1.5 text-sm text-text-secondary hover:text-text-primary font-medium rounded-lg 
+                         hover:bg-light-hover transition-all duration-150"
+            >
+              取消
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); handleConfirm() }}
+              className="px-4 py-1.5 text-sm text-white font-medium rounded-lg bg-gradient-to-r from-primary-500 to-primary-600
+                         hover:from-primary-600 hover:to-primary-700 shadow-sm hover:shadow-md transition-all duration-150"
+            >
+              确认
+            </button>
           </div>
         </div>
       )}
@@ -603,9 +710,15 @@ export default function TableDesigner({
     }
   }
 
-  const updateForeignKey = (id: string, field: keyof ForeignKeyDef, value: any) => {
-    setForeignKeys(foreignKeys.map(fk => {
+  const updateForeignKey = (id: string, field: keyof ForeignKeyDef | Record<string, any>, value?: any) => {
+    setForeignKeys(prev => prev.map(fk => {
       if (fk.id !== id) return fk
+      
+      // 支持批量更新多个字段
+      if (typeof field === 'object') {
+        return { ...fk, ...field }
+      }
+      
       const updated = { ...fk, [field]: value }
       
       // 当选择字段时，自动生成外键名（如果名称为空或以 fk_ 开头）
@@ -942,24 +1055,26 @@ export default function TableDesigner({
   ] as const
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-metro-card border border-metro-border w-[1100px] h-[700px] flex flex-col shadow-metro-lg animate-fade-in">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white border border-border-default w-[1100px] h-[700px] flex flex-col shadow-modal rounded-xl animate-fade-in">
         {/* 标题栏 */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-metro-border bg-metro-surface flex-shrink-0">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-border-default bg-white flex-shrink-0 rounded-t-xl">
           <div className="flex items-center gap-3">
-            <Table2 size={18} className="text-accent-teal" />
-            <span className="font-medium">
+            <div className="w-8 h-8 rounded-lg bg-teal-50 flex items-center justify-center">
+              <Table2 size={18} className="text-teal-500" />
+            </div>
+            <span className="font-semibold text-text-primary">
               {mode === 'create' ? '新建表' : '编辑表'} - {database}
             </span>
             {mode === 'edit' && initialTableName && (
-              <span className="text-text-secondary">({initialTableName})</span>
+              <span className="text-text-secondary font-normal">({initialTableName})</span>
             )}
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={handleSave}
               disabled={saving}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-accent-blue hover:bg-accent-blue-hover 
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-primary-500 hover:bg-primary-600 text-white rounded-lg
                          disabled:opacity-50 transition-colors"
             >
               <Save size={14} />
@@ -967,17 +1082,17 @@ export default function TableDesigner({
             </button>
             <button
               onClick={onClose}
-              className="p-1.5 hover:bg-metro-hover rounded-sm transition-colors"
+              className="p-2 hover:bg-light-hover rounded-lg transition-colors text-text-secondary hover:text-text-primary"
             >
-              <X size={16} />
+              <X size={18} />
             </button>
           </div>
         </div>
 
         {/* 表名 & 注释 & 标签页 */}
-        <div className="border-b border-metro-border bg-metro-surface/50 flex-shrink-0">
+        <div className="border-b border-border-default bg-white/50 flex-shrink-0">
           {/* 表名和注释 */}
-          <div className="flex items-center gap-6 px-4 py-2 border-b border-metro-border/50">
+          <div className="flex items-center gap-6 px-4 py-2 border-b border-border-default/50">
             <div className="flex items-center gap-2">
               <span className="text-sm text-text-secondary w-12">表名:</span>
               <input
@@ -986,8 +1101,8 @@ export default function TableDesigner({
                 onChange={(e) => setTableName(e.target.value)}
                 placeholder="输入表名"
                 disabled={mode === 'edit'}
-                className="w-48 h-8 px-3 bg-metro-surface border border-metro-border text-sm
-                           focus:border-accent-blue focus:outline-none transition-colors
+                className="w-48 h-8 px-3 bg-white border border-border-default text-sm rounded-lg text-text-primary
+                           focus:border-primary-500 focus:outline-none transition-colors
                            disabled:opacity-60 disabled:cursor-not-allowed"
               />
             </div>
@@ -998,26 +1113,26 @@ export default function TableDesigner({
                 value={options.comment}
                 onChange={(e) => setOptions({ ...options, comment: e.target.value })}
                 placeholder="表注释"
-                className="flex-1 max-w-md h-8 px-3 bg-metro-surface border border-metro-border text-sm
-                           focus:border-accent-blue focus:outline-none transition-colors"
+                className="flex-1 max-w-md h-8 px-3 bg-white border border-border-default text-sm rounded-lg text-text-primary
+                           focus:border-primary-500 focus:outline-none transition-colors"
               />
             </div>
           </div>
           {/* 标签页 */}
-          <div className="flex px-4">
+          <div className="flex px-5">
             {tabs.map(tab => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-1.5 px-4 py-2 text-sm border-b-2 transition-colors
+                className={`flex items-center gap-2 px-4 py-2.5 text-sm border-b-2 transition-colors font-medium
                   ${activeTab === tab.id 
-                    ? 'border-accent-blue text-accent-blue' 
+                    ? 'border-primary-500 text-primary-600' 
                     : 'border-transparent text-text-secondary hover:text-text-primary'}`}
               >
-                <tab.icon size={14} />
+                <tab.icon size={15} />
                 {tab.label}
                 {'count' in tab && tab.count !== undefined && (
-                  <span className="ml-1 text-xs bg-metro-hover px-1.5 rounded">{tab.count}</span>
+                  <span className={`ml-1 text-xs px-1.5 py-0.5 rounded-full ${activeTab === tab.id ? 'bg-primary-100 text-primary-600' : 'bg-light-muted text-text-secondary'}`}>{tab.count}</span>
                 )}
               </button>
             ))}
@@ -1026,13 +1141,13 @@ export default function TableDesigner({
 
         {/* 错误提示 */}
         {error && (
-          <div className="px-4 py-2 bg-accent-red/20 border-b border-accent-red/30 text-sm text-accent-red flex-shrink-0">
+          <div className="px-4 py-2 bg-danger-500/20 border-b border-danger-500/30 text-sm text-danger-500 flex-shrink-0">
             {error}
           </div>
         )}
 
         {/* 内容区 */}
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 overflow-hidden bg-light-bg">
           {loading ? (
             <div className="flex items-center justify-center h-full text-text-secondary">
               加载中...
@@ -1167,10 +1282,10 @@ function ColumnsTab({
   return (
     <div className="h-full flex flex-col">
       {/* 工具栏 */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-metro-border bg-metro-surface/30 flex-shrink-0">
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-border-default bg-white/30 flex-shrink-0">
         <button
           onClick={onAdd}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-accent-green hover:bg-accent-green/80 transition-colors"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-success-500 hover:bg-success-600 text-white rounded-lg transition-colors"
         >
           <Plus size={14} />
           添加字段
@@ -1180,8 +1295,8 @@ function ColumnsTab({
       {/* 表格 */}
       <div className="flex-1 overflow-auto">
         <table className="w-full text-sm">
-          <thead className="bg-metro-surface sticky top-0">
-            <tr className="border-b border-metro-border">
+          <thead className="bg-white sticky top-0">
+            <tr className="border-b border-border-default text-text-primary">
               <th className="w-8 px-1 py-2"></th>
               <th className="w-36 px-3 py-2 text-left font-medium">名称</th>
               <th className="w-28 px-3 py-2 text-left font-medium">类型</th>
@@ -1201,10 +1316,10 @@ function ColumnsTab({
                 key={col.id}
                 onDragOver={(e) => handleDragOver(e, index)}
                 onClick={() => onSelect(col.id)}
-                className={`border-b border-metro-border/50 cursor-pointer transition-colors
-                  ${selectedId === col.id ? 'bg-accent-blue/20' : 'hover:bg-metro-hover/50'}
-                  ${col._isNew ? 'bg-accent-green/10' : ''}
-                  ${dragOverIndex === index ? 'border-t-2 border-t-accent-blue' : ''}`}
+                className={`border-b border-border-default/50 cursor-pointer transition-colors
+                  ${selectedId === col.id ? 'bg-primary-500/20' : 'hover:bg-light-hover/50'}
+                  ${col._isNew ? 'bg-success-50' : ''}
+                  ${dragOverIndex === index ? 'border-t-2 border-t-primary-500' : ''}`}
               >
                 <td 
                   draggable
@@ -1221,9 +1336,9 @@ function ColumnsTab({
                     onChange={(e) => onUpdate(col.id, 'name', e.target.value)}
                     onFocus={() => onSelect(col.id)}
                     placeholder="字段名"
-                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-metro-border 
-                               focus:border-accent-blue focus:bg-metro-surface focus:outline-none text-xs
-                               selection:bg-accent-blue selection:text-white"
+                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-border-default 
+                               focus:border-primary-500 focus:bg-white focus:outline-none text-xs text-text-primary
+                               selection:bg-primary-500 selection:text-white"
                   />
                 </td>
                 <td className="px-3 py-1.5" onClick={(e) => e.stopPropagation()}>
@@ -1231,8 +1346,8 @@ function ColumnsTab({
                     value={col.type}
                     onChange={(e) => onUpdate(col.id, 'type', e.target.value)}
                     onFocus={() => onSelect(col.id)}
-                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-metro-border 
-                               focus:border-accent-blue focus:bg-metro-surface focus:outline-none text-xs"
+                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-border-default 
+                               focus:border-primary-500 focus:bg-white focus:outline-none text-xs text-text-primary"
                   >
                     {dataTypes.map(group => (
                       <optgroup key={group.group} label={group.group}>
@@ -1251,9 +1366,9 @@ function ColumnsTab({
                     onFocus={() => onSelect(col.id)}
                     disabled={!needsLength(col.type)}
                     placeholder={needsLength(col.type) ? '' : '-'}
-                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-metro-border 
-                               focus:border-accent-blue focus:bg-metro-surface focus:outline-none text-xs
-                               disabled:opacity-40 disabled:cursor-not-allowed selection:bg-accent-blue selection:text-white"
+                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-border-default 
+                               focus:border-primary-500 focus:bg-white focus:outline-none text-xs text-text-primary
+                               disabled:opacity-40 disabled:cursor-not-allowed selection:bg-primary-500 selection:text-white"
                   />
                 </td>
                 <td className="px-3 py-1.5" onClick={(e) => e.stopPropagation()}>
@@ -1264,9 +1379,9 @@ function ColumnsTab({
                     onFocus={() => onSelect(col.id)}
                     disabled={!needsDecimals(col.type)}
                     placeholder={needsDecimals(col.type) ? '' : '-'}
-                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-metro-border 
-                               focus:border-accent-blue focus:bg-metro-surface focus:outline-none text-xs
-                               disabled:opacity-40 disabled:cursor-not-allowed selection:bg-accent-blue selection:text-white"
+                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-border-default 
+                               focus:border-primary-500 focus:bg-white focus:outline-none text-xs text-text-primary
+                               disabled:opacity-40 disabled:cursor-not-allowed selection:bg-primary-500 selection:text-white"
                   />
                 </td>
                 <td className="px-3 py-1.5 text-center" onClick={(e) => e.stopPropagation()}>
@@ -1278,7 +1393,7 @@ function ColumnsTab({
                       onUpdate(col.id, 'nullable', !e.target.checked)
                     }}
                     disabled={col.primaryKey}
-                    className="w-4 h-4 accent-accent-blue disabled:opacity-50"
+                    className="w-4 h-4 accent-blue-500 disabled:opacity-50"
                   />
                 </td>
                 {isMysql && (
@@ -1291,7 +1406,7 @@ function ColumnsTab({
                         onUpdate(col.id, 'unsigned', e.target.checked)
                       }}
                       disabled={!supportsUnsigned(col.type)}
-                      className="w-4 h-4 accent-accent-blue disabled:opacity-50"
+                      className="w-4 h-4 accent-blue-500 disabled:opacity-50"
                     />
                   </td>
                 )}
@@ -1301,13 +1416,13 @@ function ColumnsTab({
                       onSelect(col.id)
                       onUpdate(col.id, 'primaryKey', !col.primaryKey)
                     }}
-                    className={`p-1 rounded-sm transition-colors ${col.primaryKey ? 'bg-accent-orange text-white' : 'hover:bg-metro-hover'}`}
+                    className={`p-1.5 rounded transition-colors ${col.primaryKey ? 'bg-warning-500 text-white' : 'text-text-muted hover:bg-light-hover hover:text-warning-500'}`}
                     title={col.primaryKey ? '主键' : '设为主键'}
                   >
-                    <Key size={12} />
+                    <Key size={14} />
                   </button>
                   {col.autoIncrement && (
-                    <span className="ml-1 text-xs text-accent-blue" title="自增">A</span>
+                    <span className="ml-1 text-xs text-primary-500" title="自增">A</span>
                   )}
                 </td>
                 <td className="px-3 py-1.5" onClick={(e) => e.stopPropagation()}>
@@ -1317,9 +1432,9 @@ function ColumnsTab({
                     onChange={(e) => onUpdate(col.id, 'defaultValue', e.target.value)}
                     onFocus={() => onSelect(col.id)}
                     placeholder=""
-                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-metro-border 
-                               focus:border-accent-blue focus:bg-metro-surface focus:outline-none text-xs
-                               selection:bg-accent-blue selection:text-white"
+                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-border-default 
+                               focus:border-primary-500 focus:bg-white focus:outline-none text-xs text-text-primary
+                               selection:bg-primary-500 selection:text-white"
                   />
                 </td>
                 <td className="px-3 py-1.5" onClick={(e) => e.stopPropagation()}>
@@ -1329,9 +1444,9 @@ function ColumnsTab({
                     onChange={(e) => onUpdate(col.id, 'comment', e.target.value)}
                     onFocus={() => onSelect(col.id)}
                     placeholder=""
-                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-metro-border 
-                               focus:border-accent-blue focus:bg-metro-surface focus:outline-none text-xs
-                               selection:bg-accent-blue selection:text-white"
+                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-border-default 
+                               focus:border-primary-500 focus:bg-white focus:outline-none text-xs text-text-primary
+                               selection:bg-primary-500 selection:text-white"
                   />
                 </td>
                 <td className="px-2 py-1.5 text-center" onClick={(e) => e.stopPropagation()}>
@@ -1341,7 +1456,7 @@ function ColumnsTab({
                       if (columns.length > 1) onRemove(col.id)
                     }}
                     disabled={columns.length <= 1}
-                    className="p-1 text-text-secondary hover:text-accent-red hover:bg-accent-red/10 rounded transition-colors
+                    className="p-1 text-text-secondary hover:text-danger-500 hover:bg-danger-500/10 rounded transition-colors
                                disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-text-secondary disabled:hover:bg-transparent"
                     title="删除字段"
                   >
@@ -1373,34 +1488,34 @@ function ColumnDetailPanel({ column, onUpdate, isMysql }: {
   isMysql: boolean
 }) {
   return (
-    <div className="border-t border-metro-border bg-metro-surface/50 px-4 py-3 flex-shrink-0">
+    <div className="border-t border-border-default bg-white px-5 py-3.5 flex-shrink-0">
       <div className="grid grid-cols-4 gap-4 text-sm">
-        <label className="flex items-center gap-2">
+        <label className="flex items-center gap-2 text-text-primary cursor-pointer">
           <input
             type="checkbox"
             checked={column.autoIncrement}
             onChange={(e) => onUpdate('autoIncrement', e.target.checked)}
-            className="w-4 h-4 accent-accent-blue"
+            className="w-4 h-4 accent-blue-500 rounded"
           />
           <span>自动递增</span>
         </label>
         {isMysql && (
           <>
-            <label className="flex items-center gap-2">
+            <label className="flex items-center gap-2 text-text-primary cursor-pointer">
               <input
                 type="checkbox"
                 checked={column.zerofill}
                 onChange={(e) => onUpdate('zerofill', e.target.checked)}
-                className="w-4 h-4 accent-accent-blue"
+                className="w-4 h-4 accent-blue-500 rounded"
               />
               <span>填充零</span>
             </label>
-            <label className="flex items-center gap-2">
+            <label className="flex items-center gap-2 text-text-primary cursor-pointer">
               <input
                 type="checkbox"
                 checked={column.isVirtual}
                 onChange={(e) => onUpdate('isVirtual', e.target.checked)}
-                className="w-4 h-4 accent-accent-blue"
+                className="w-4 h-4 accent-blue-500 rounded"
               />
               <span>虚拟</span>
             </label>
@@ -1439,10 +1554,10 @@ function IndexesTab({ indexes, columns, selectedId, onSelect, onAdd, onRemove, o
   return (
     <div className="h-full flex flex-col">
       {/* 工具栏 */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-metro-border bg-metro-surface/30 flex-shrink-0">
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-border-default bg-white/30 flex-shrink-0">
         <button
           onClick={onAdd}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-accent-green hover:bg-accent-green/80 transition-colors"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-success-500 hover:bg-success-600 text-white rounded-lg transition-colors"
         >
           <Plus size={14} />
           添加索引
@@ -1452,8 +1567,8 @@ function IndexesTab({ indexes, columns, selectedId, onSelect, onAdd, onRemove, o
       {/* 表格 */}
       <div className="flex-1 overflow-auto">
         <table className="w-full text-sm">
-          <thead className="bg-metro-surface sticky top-0">
-            <tr className="border-b border-metro-border">
+          <thead className="bg-white sticky top-0">
+            <tr className="border-b border-border-default text-text-primary">
               <th className="w-40 px-3 py-2 text-left font-medium">名称</th>
               <th className="w-64 px-3 py-2 text-left font-medium">字段</th>
               <th className="w-28 px-3 py-2 text-left font-medium">索引类型</th>
@@ -1467,9 +1582,9 @@ function IndexesTab({ indexes, columns, selectedId, onSelect, onAdd, onRemove, o
               <tr
                 key={idx.id}
                 onClick={() => onSelect(idx.id)}
-                className={`border-b border-metro-border/50 cursor-pointer transition-colors
-                  ${selectedId === idx.id ? 'bg-accent-blue/20' : 'hover:bg-metro-hover/50'}
-                  ${idx._isNew ? 'bg-accent-green/10' : ''}`}
+                className={`border-b border-border-default/50 cursor-pointer transition-colors
+                  ${selectedId === idx.id ? 'bg-primary-500/20' : 'hover:bg-light-hover/50'}
+                  ${idx._isNew ? 'bg-success-50' : ''}`}
               >
                 <td className="px-3 py-1.5">
                   <input
@@ -1478,8 +1593,8 @@ function IndexesTab({ indexes, columns, selectedId, onSelect, onAdd, onRemove, o
                     onChange={(e) => onUpdate(idx.id, 'name', e.target.value)}
                     onClick={(e) => e.stopPropagation()}
                     placeholder="索引名"
-                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-metro-border 
-                               focus:border-accent-blue focus:bg-metro-surface focus:outline-none text-xs"
+                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-border-default 
+                               focus:border-primary-500 focus:bg-white focus:outline-none text-xs text-text-primary"
                   />
                 </td>
                 <td className="px-3 py-1.5" onClick={(e) => e.stopPropagation()}>
@@ -1515,8 +1630,8 @@ function IndexesTab({ indexes, columns, selectedId, onSelect, onAdd, onRemove, o
                     onChange={(e) => onUpdate(idx.id, 'comment', e.target.value)}
                     onClick={(e) => e.stopPropagation()}
                     placeholder=""
-                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-metro-border 
-                               focus:border-accent-blue focus:bg-metro-surface focus:outline-none text-xs"
+                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-border-default 
+                               focus:border-primary-500 focus:bg-white focus:outline-none text-xs text-text-primary"
                   />
                 </td>
                 <td className="px-3 py-1.5 text-center">
@@ -1525,7 +1640,7 @@ function IndexesTab({ indexes, columns, selectedId, onSelect, onAdd, onRemove, o
                       e.stopPropagation()
                       onRemove(idx.id)
                     }}
-                    className="p-1 text-text-secondary hover:text-accent-red hover:bg-accent-red/10 rounded transition-colors"
+                    className="p-1 text-text-secondary hover:text-danger-500 hover:bg-danger-500/10 rounded transition-colors"
                     title="删除索引"
                   >
                     <Trash2 size={14} />
@@ -1553,7 +1668,7 @@ interface ForeignKeysTabProps {
   onSelect: (id: string | null) => void
   onAdd: () => void
   onRemove: (id: string) => void
-  onUpdate: (id: string, field: keyof ForeignKeyDef, value: any) => void
+  onUpdate: (id: string, field: keyof ForeignKeyDef | Record<string, any>, value?: any) => void
   onGetDatabases?: () => Promise<string[]>
   onGetTables?: (database: string) => Promise<string[]>
   onGetColumns?: (database: string, table: string) => Promise<string[]>
@@ -1573,6 +1688,18 @@ function ForeignKeysTab({
       onGetDatabases().then(dbs => setDatabases(dbs))
     }
   }, [])
+
+  // 当外键列表变化时，为没有加载表列表的外键自动加载当前数据库的表
+  useEffect(() => {
+    foreignKeys.forEach(fk => {
+      if (!refTables[fk.id] && onGetTables) {
+        const schema = fk.refSchema || currentDatabase
+        onGetTables(schema).then(tables => {
+          setRefTables(prev => ({ ...prev, [fk.id]: tables }))
+        })
+      }
+    })
+  }, [foreignKeys.length, currentDatabase])
 
   const loadRefTables = async (fkId: string, schema: string) => {
     if (!onGetTables) return
@@ -1594,10 +1721,10 @@ function ForeignKeysTab({
   return (
     <div className="h-full flex flex-col">
       {/* 工具栏 */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-metro-border bg-metro-surface/30 flex-shrink-0">
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-border-default bg-white/30 flex-shrink-0">
         <button
           onClick={onAdd}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-accent-green hover:bg-accent-green/80 transition-colors"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-success-500 hover:bg-success-600 text-white rounded-lg transition-colors"
         >
           <Plus size={14} />
           添加外键
@@ -1607,11 +1734,11 @@ function ForeignKeysTab({
       {/* 表格 */}
       <div className="flex-1 overflow-auto">
         <table className="w-full text-sm">
-          <thead className="bg-metro-surface sticky top-0">
-            <tr className="border-b border-metro-border">
+          <thead className="bg-white sticky top-0">
+            <tr className="border-b border-border-default text-text-primary">
               <th className="w-36 px-3 py-2 text-left font-medium">名称</th>
               <th className="w-28 px-3 py-2 text-left font-medium">字段</th>
-              <th className="w-28 px-3 py-2 text-left font-medium">被引用的模式</th>
+              <th className="w-28 px-3 py-2 text-left font-medium">被引用的数据库</th>
               <th className="w-28 px-3 py-2 text-left font-medium">被引用的表</th>
               <th className="w-28 px-3 py-2 text-left font-medium">被引用的字段</th>
               <th className="w-24 px-3 py-2 text-left font-medium">删除时</th>
@@ -1624,9 +1751,9 @@ function ForeignKeysTab({
               <tr
                 key={fk.id}
                 onClick={() => onSelect(fk.id)}
-                className={`border-b border-metro-border/50 cursor-pointer transition-colors
-                  ${selectedId === fk.id ? 'bg-accent-blue/20' : 'hover:bg-metro-hover/50'}
-                  ${fk._isNew ? 'bg-accent-green/10' : ''}`}
+                className={`border-b border-border-default/50 cursor-pointer transition-colors
+                  ${selectedId === fk.id ? 'bg-primary-500/20' : 'hover:bg-light-hover/50'}
+                  ${fk._isNew ? 'bg-success-50' : ''}`}
               >
                 <td className="px-3 py-1.5">
                   <input
@@ -1635,8 +1762,8 @@ function ForeignKeysTab({
                     onChange={(e) => onUpdate(fk.id, 'name', e.target.value)}
                     onClick={(e) => e.stopPropagation()}
                     placeholder="外键名"
-                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-metro-border 
-                               focus:border-accent-blue focus:bg-metro-surface focus:outline-none text-xs"
+                    className="w-full h-7 px-2 bg-transparent border border-transparent hover:border-border-default 
+                               focus:border-primary-500 focus:bg-white focus:outline-none text-xs text-text-primary"
                   />
                 </td>
                 <td className="px-3 py-1.5" onClick={(e) => e.stopPropagation()}>
@@ -1652,10 +1779,12 @@ function ForeignKeysTab({
                     value={fk.refSchema || currentDatabase}
                     options={dbOptions}
                     onChange={(val) => {
-                      onUpdate(fk.id, 'refSchema', val)
+                      // 批量更新：设置数据库并清空表和字段
+                      onUpdate(fk.id, { refSchema: val, refTable: '', refColumns: [] })
+                      // 自动加载该数据库下的表列表
                       loadRefTables(fk.id, val)
                     }}
-                    placeholder="选择模式"
+                    placeholder="选择数据库"
                   />
                 </td>
                 <td className="px-3 py-1.5" onClick={(e) => e.stopPropagation()}>
@@ -1666,32 +1795,18 @@ function ForeignKeysTab({
                       onUpdate(fk.id, 'refTable', val)
                       loadRefColumns(fk.id, fk.refSchema || currentDatabase, val)
                     }}
-                    placeholder="选择表"
+                    placeholder={refTables[fk.id] ? "选择表" : "请先选择数据库"}
+                    disabled={!refTables[fk.id]}
                   />
-                  {!refTables[fk.id] && (
-                    <button
-                      onClick={() => loadRefTables(fk.id, fk.refSchema || currentDatabase)}
-                      className="text-[10px] text-accent-blue hover:underline mt-0.5"
-                    >
-                      加载表列表
-                    </button>
-                  )}
                 </td>
                 <td className="px-3 py-1.5" onClick={(e) => e.stopPropagation()}>
                   <SearchableSelect
                     value={fk.refColumns[0] || ''}
                     options={(refColumns[fk.id] || []).map(c => ({ label: c, value: c }))}
                     onChange={(val) => onUpdate(fk.id, 'refColumns', [val])}
-                    placeholder="选择字段"
+                    placeholder={refColumns[fk.id] ? "选择字段" : "请先选择表"}
+                    disabled={!fk.refTable || !refColumns[fk.id]}
                   />
-                  {fk.refTable && !refColumns[fk.id] && (
-                    <button
-                      onClick={() => loadRefColumns(fk.id, fk.refSchema || currentDatabase, fk.refTable)}
-                      className="text-[10px] text-accent-blue hover:underline mt-0.5"
-                    >
-                      加载字段
-                    </button>
-                  )}
                 </td>
                 <td className="px-3 py-1.5" onClick={(e) => e.stopPropagation()}>
                   <SearchableSelect
@@ -1713,7 +1828,7 @@ function ForeignKeysTab({
                       e.stopPropagation()
                       onRemove(fk.id)
                     }}
-                    className="p-1 text-text-secondary hover:text-accent-red hover:bg-accent-red/10 rounded transition-colors"
+                    className="p-1 text-text-secondary hover:text-danger-500 hover:bg-danger-500/10 rounded transition-colors"
                     title="删除外键"
                   >
                     <Trash2 size={14} />
@@ -1757,30 +1872,30 @@ function OptionsTab({ options, dbType, onChange }: OptionsTabProps) {
   }
 
   return (
-    <div className="p-4 space-y-4">
-      <div className="grid grid-cols-2 gap-4">
+    <div className="p-6 space-y-5">
+      <div className="grid grid-cols-2 gap-5">
         <div>
-          <label className="block text-sm text-text-secondary mb-1.5">数据库引擎</label>
+          <label className="block text-sm text-text-primary font-medium mb-2">数据库引擎</label>
           <SearchableSelect
             value={options.engine}
             options={engineOptions}
             onChange={(val) => onChange({ ...options, engine: val })}
             placeholder="选择引擎"
-            className="h-9 bg-metro-surface border border-metro-border px-2"
+            className="h-10 bg-white border border-border-default rounded-lg px-3"
           />
         </div>
         <div>
-          <label className="block text-sm text-text-secondary mb-1.5">行格式</label>
+          <label className="block text-sm text-text-primary font-medium mb-2">行格式</label>
           <SearchableSelect
             value={options.rowFormat}
             options={rowFormatOptions}
             onChange={(val) => onChange({ ...options, rowFormat: val })}
             placeholder="选择行格式"
-            className="h-9 bg-metro-surface border border-metro-border px-2"
+            className="h-10 bg-white border border-border-default rounded-lg px-3"
           />
         </div>
         <div>
-          <label className="block text-sm text-text-secondary mb-1.5">字符集</label>
+          <label className="block text-sm text-text-primary font-medium mb-2">字符集</label>
           <SearchableSelect
             value={options.charset}
             options={charsetOptions}
@@ -1793,28 +1908,28 @@ function OptionsTab({ options, dbType, onChange }: OptionsTabProps) {
               })
             }}
             placeholder="选择字符集"
-            className="h-9 bg-metro-surface border border-metro-border px-2"
+            className="h-10 bg-white border border-border-default rounded-lg px-3"
           />
         </div>
         <div>
-          <label className="block text-sm text-text-secondary mb-1.5">排序规则</label>
+          <label className="block text-sm text-text-primary font-medium mb-2">排序规则</label>
           <SearchableSelect
             value={options.collation}
             options={collationOptions}
             onChange={(val) => onChange({ ...options, collation: val })}
             placeholder="选择排序规则"
-            className="h-9 bg-metro-surface border border-metro-border px-2"
+            className="h-10 bg-white border border-border-default rounded-lg px-3"
           />
         </div>
         <div>
-          <label className="block text-sm text-text-secondary mb-1.5">自增值</label>
+          <label className="block text-sm text-text-primary font-medium mb-2">自增值</label>
           <input
             type="text"
             value={options.autoIncrement}
             onChange={(e) => onChange({ ...options, autoIncrement: e.target.value })}
             placeholder="默认"
-            className="w-full h-9 px-3 bg-metro-surface border border-metro-border text-sm
-                       focus:border-accent-blue focus:outline-none transition-colors"
+            className="w-full h-10 px-3 bg-white border border-border-default text-sm text-text-primary rounded-lg
+                       focus:border-primary-500 focus:outline-none transition-colors"
           />
         </div>
       </div>
@@ -1834,17 +1949,17 @@ function SqlPreviewTab({ sql }: { sql: string }) {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex items-center justify-between px-4 py-2 border-b border-metro-border bg-metro-surface/30 flex-shrink-0">
-        <span className="text-sm text-text-secondary">将要执行的 SQL 语句</span>
+      <div className="flex items-center justify-between px-5 py-3 border-b border-border-default bg-white flex-shrink-0">
+        <span className="text-sm text-text-primary font-medium">将要执行的 SQL 语句</span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-metro-surface hover:bg-metro-hover border border-metro-border transition-colors"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-primary bg-white hover:bg-light-hover border border-border-default rounded-lg transition-colors"
         >
-          {copied ? '已复制' : '复制'}
+          {copied ? '✓ 已复制' : '复制'}
         </button>
       </div>
-      <div className="flex-1 overflow-auto p-4">
-        <pre className="text-sm font-mono text-accent-teal whitespace-pre-wrap break-all">
+      <div className="flex-1 overflow-auto p-5 bg-slate-50">
+        <pre className="text-sm font-mono text-primary-600 whitespace-pre-wrap break-all leading-relaxed">
           {sql}
         </pre>
       </div>

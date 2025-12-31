@@ -228,9 +228,9 @@ export function useConnections() {
 
   // 加载保存的连接
   useEffect(() => {
-    const loadConnections = async () => {
+    const doLoadConnections = async () => {
       try {
-        const saved = await api.getConnections()
+        const saved = await api.loadConnections()
         if (saved && Array.isArray(saved)) {
           setConnections(saved)
         }
@@ -238,7 +238,7 @@ export function useConnections() {
         console.error('加载连接失败:', err)
       }
     }
-    loadConnections()
+    doLoadConnections()
   }, [])
 
   // 添加连接
@@ -284,13 +284,29 @@ export function useConnections() {
 export function useDatabaseOperations(showNotification: (type: 'success' | 'error' | 'info', msg: string) => void) {
   const [databasesMap, setDatabasesMap] = useState<Map<string, string[]>>(new Map())
   const [loadingDbSet, setLoadingDbSet] = useState<Set<string>>(new Set())
+  const [loadingConnectionsSet, setLoadingConnectionsSet] = useState<Set<string>>(new Set())
 
   const fetchDatabases = useCallback(async (connectionId: string) => {
+    // 标记开始加载
+    setLoadingConnectionsSet(prev => new Set(prev).add(connectionId))
     try {
       const dbs = await api.getDatabases(connectionId)
-      setDatabasesMap(prev => new Map(prev).set(connectionId, dbs))
+      console.log('获取到数据库列表:', connectionId, dbs)
+      setDatabasesMap(prev => new Map(prev).set(connectionId, dbs || []))
+      if (!dbs || dbs.length === 0) {
+        showNotification('info', '未发现数据库或无权限访问')
+      }
     } catch (err) {
-      showNotification('error', '获取数据库列表失败')
+      console.error('获取数据库列表失败:', err)
+      showNotification('error', '获取数据库列表失败: ' + (err as Error).message)
+      setDatabasesMap(prev => new Map(prev).set(connectionId, []))
+    } finally {
+      // 标记加载完成
+      setLoadingConnectionsSet(prev => {
+        const next = new Set(prev)
+        next.delete(connectionId)
+        return next
+      })
     }
   }, [showNotification])
 
@@ -299,6 +315,7 @@ export function useDatabaseOperations(showNotification: (type: 'success' | 'erro
     setDatabasesMap,
     loadingDbSet,
     setLoadingDbSet,
+    loadingConnectionsSet,
     fetchDatabases
   }
 }
@@ -384,13 +401,49 @@ export function useImportExport(
   const importConnections = useCallback(async () => {
     try {
       const result = await api.importConnections()
-      if (result && result.length > 0) {
+      if (result.cancelled) {
+        return // 用户取消了选择
+      }
+      if (!result.success) {
+        showNotification('error', result.error || '导入失败')
+        return
+      }
+      if (result.connections && result.connections.length > 0) {
         setConnections(prev => {
-          const updated = [...prev, ...result]
+          // 根据连接名称判断是否已存在，存在则覆盖
+          const existingMap = new Map(prev.map(c => [c.name, c]))
+          let updatedCount = 0
+          let newCount = 0
+          
+          for (const importedConn of result.connections!) {
+            const existing = existingMap.get(importedConn.name)
+            if (existing) {
+              // 保留原有 ID，覆盖其他信息
+              existingMap.set(importedConn.name, {
+                ...importedConn,
+                id: existing.id
+              })
+              updatedCount++
+            } else {
+              // 新增连接
+              existingMap.set(importedConn.name, importedConn)
+              newCount++
+            }
+          }
+          
+          const updated = Array.from(existingMap.values())
           api.saveConnections(updated)
+          
+          // 显示详细的导入信息
+          const messages: string[] = []
+          if (newCount > 0) messages.push(`新增 ${newCount} 个`)
+          if (updatedCount > 0) messages.push(`覆盖 ${updatedCount} 个`)
+          showNotification('success', `已从 ${result.source || '文件'} 导入连接：${messages.join('，')}`)
+          
           return updated
         })
-        showNotification('success', `已导入 ${result.length} 个连接`)
+      } else {
+        showNotification('info', '文件中没有找到连接信息')
       }
     } catch (err) {
       showNotification('error', '导入失败：' + (err as Error).message)

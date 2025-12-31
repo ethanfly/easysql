@@ -137,7 +137,7 @@ export default function ConnectionModal({ isOpen, editingConnection, initialType
   const isEditing = !!editingConnection
 
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 animate-fade-in backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 animate-fade-in backdrop-blur-sm">
       <div className="w-[520px] max-h-[90vh] bg-white flex flex-col overflow-hidden rounded-2xl shadow-modal animate-scale-in" onClick={e => e.stopPropagation()}>
         {/* 标题 */}
         <div className="h-14 flex items-center justify-between px-5 border-b border-border-default">

@@ -54,6 +54,9 @@ declare global {
       saveDialog: (options: any) => Promise<string | null>
       writeFile: (filePath: string, content: string) => Promise<{ success: boolean; error?: string }>
       readFile: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>
+      
+      // 密码解密
+      decryptNavicatPassword: (encryptedPassword: string, version?: number) => Promise<string>
     }
   }
 }
@@ -248,6 +251,24 @@ const api = {
       return { columns: [], rows: [], error: e.toString() }
     }
   },
+
+  // 执行查询（query 的别名，用于兼容）
+  executeQuery: async (id: string, sql: string): Promise<{ columns: string[]; rows: any[]; error?: string }> => {
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) {
+      return { columns: [], rows: [], error: 'Electron API 不可用' }
+    }
+    try {
+      const result = await electronAPI.query(id, sql)
+      return {
+        columns: result.columns,
+        rows: result.rows,
+        error: result.error,
+      }
+    } catch (e: any) {
+      return { columns: [], rows: [], error: e.toString() }
+    }
+  },
   
   getDatabases: async (id: string): Promise<string[]> => {
     const electronAPI = getElectronAPI()
@@ -278,6 +299,18 @@ const api = {
       return await electronAPI.getColumns(id, database, table)
     } catch (e) {
       console.error('getColumns error:', e)
+      return []
+    }
+  },
+  
+  // 别名，兼容旧代码
+  getTableColumns: async (id: string, database: string, table: string): Promise<ColumnInfo[]> => {
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) return []
+    try {
+      return await electronAPI.getColumns(id, database, table)
+    } catch (e) {
+      console.error('getTableColumns error:', e)
       return []
     }
   },
@@ -339,6 +372,44 @@ const api = {
     try {
       const result = await electronAPI.insertRow(id, database, tableName, columns, values)
       return { success: result.success, error: result.success ? undefined : result.message, insertId: result.insertId }
+    } catch (e: any) {
+      return { success: false, error: e.toString() }
+    }
+  },
+
+  // 更新行（简化参数格式，兼容旧代码）
+  updateTableRow: async (id: string, database: string, tableName: string, primaryKeyColumn: string, primaryKeyValue: any, updates: Record<string, any>): Promise<{ success?: boolean; error?: string }> => {
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) return { success: false, error: 'Electron API 不可用' }
+    try {
+      const result = await electronAPI.updateRow(id, database, tableName, { column: primaryKeyColumn, value: primaryKeyValue }, updates)
+      return { success: result.success, error: result.success ? undefined : result.message }
+    } catch (e: any) {
+      return { success: false, error: e.toString() }
+    }
+  },
+
+  // 插入行（对象格式，兼容旧代码）
+  insertTableRow: async (id: string, database: string, tableName: string, data: Record<string, any>): Promise<{ success?: boolean; error?: string; insertId?: number }> => {
+    const columns = Object.keys(data)
+    const values = Object.values(data)
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) return { success: false, error: 'Electron API 不可用' }
+    try {
+      const result = await electronAPI.insertRow(id, database, tableName, columns, values)
+      return { success: result.success, error: result.success ? undefined : result.message, insertId: result.insertId }
+    } catch (e: any) {
+      return { success: false, error: e.toString() }
+    }
+  },
+
+  // 删除行（简化参数格式，兼容旧代码）
+  deleteTableRow: async (id: string, database: string, tableName: string, primaryKeyColumn: string, primaryKeyValue: any): Promise<{ success?: boolean; error?: string }> => {
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) return { success: false, error: 'Electron API 不可用' }
+    try {
+      const result = await electronAPI.deleteRow(id, database, tableName, { column: primaryKeyColumn, value: primaryKeyValue })
+      return { success: result.success, error: result.success ? undefined : result.message }
     } catch (e: any) {
       return { success: false, error: e.toString() }
     }
@@ -566,7 +637,8 @@ const api = {
       
       let connections: any[]
       if (isNcx) {
-        connections = parseNcx(result.content)
+        // NCX 解析现在是异步的，因为需要解密密码
+        connections = await parseNcxAsync(result.content, electronAPI)
       } else {
         connections = JSON.parse(result.content)
       }
@@ -694,36 +766,171 @@ const api = {
   },
 }
 
-// 简单的 NCX 解析和生成
-function parseNcx(content: string): any[] {
+// NCX 解析 - 支持多种 Navicat 导出格式（异步版本，支持密码解密）
+async function parseNcxAsync(content: string, electronAPI: Window['electronAPI']): Promise<any[]> {
   const connections: any[] = []
-  const regex = /<Connection[^>]*\/>/g
-  let match
   
-  while ((match = regex.exec(content)) !== null) {
+  // 尝试匹配两种格式:
+  // 1. 自闭合: <Connection ... />
+  // 2. 非自闭合: <Connection ...>...</Connection>
+  const selfClosingRegex = /<Connection\s+([^>]*?)\/>/gi
+  const openTagRegex = /<Connection\s+([^>]*?)>/gi
+  
+  // 解析属性的辅助函数
+  const parseAttrs = (attrString: string): Record<string, string> => {
     const attrs: Record<string, string> = {}
-    const attrRegex = /(\w+)="([^"]*)"/g
-    let attrMatch
+    const attrRegex = /(\w+)\s*=\s*"([^"]*)"/g
+    let match
+    while ((match = attrRegex.exec(attrString)) !== null) {
+      attrs[match[1]] = match[2]
+    }
+    return attrs
+  }
+  
+  // 从属性创建连接对象（异步，支持密码解密）
+  const createConnection = async (attrs: Record<string, string>) => {
+    // 支持多种属性名称格式
+    const name = attrs.ConnectionName || attrs.Name || attrs.connection_name || ''
+    if (!name) return null
     
-    while ((attrMatch = attrRegex.exec(match[0])) !== null) {
-      attrs[attrMatch[1]] = attrMatch[2]
+    // 类型映射
+    let type = (attrs.ConnType || attrs.Type || attrs.conn_type || 'mysql').toLowerCase()
+    if (type === 'postgresql') type = 'postgres'
+    if (type === 'sql server' || type === 'mssql') type = 'sqlserver'
+    
+    // 获取加密的密码
+    const encryptedPassword = attrs.Password || attrs.password || ''
+    let password = ''
+    
+    // 如果密码看起来是加密的（全是十六进制字符），则尝试解密
+    if (encryptedPassword && /^[0-9A-Fa-f]+$/.test(encryptedPassword) && encryptedPassword.length >= 16) {
+      try {
+        // 检测 Navicat 版本 - 通过查找 Version 属性或使用默认的 12+
+        const version = parseInt(attrs.Version || attrs.version || '12') || 12
+        password = await electronAPI.decryptNavicatPassword(encryptedPassword, version)
+        console.log(`密码解密成功: ${name} (版本: ${version})`)
+      } catch (e) {
+        console.warn(`密码解密失败: ${name}`, e)
+        // 解密失败时保留原始值（可能是明文密码）
+        password = encryptedPassword
+      }
+    } else {
+      // 如果密码不是十六进制格式，假设是明文
+      password = encryptedPassword
     }
     
-    if (attrs.ConnectionName) {
-      connections.push({
-        id: crypto.randomUUID(),
-        name: attrs.ConnectionName,
-        type: (attrs.ConnType || 'mysql').toLowerCase(),
-        host: attrs.Host || 'localhost',
-        port: parseInt(attrs.Port) || 3306,
-        username: attrs.UserName || '',
-        password: attrs.Password || '',
-        database: attrs.Database || '',
-      })
+    return {
+      id: crypto.randomUUID(),
+      name,
+      type,
+      host: attrs.Host || attrs.host || attrs.Server || 'localhost',
+      port: parseInt(attrs.Port || attrs.port || '3306') || 3306,
+      username: attrs.UserName || attrs.Username || attrs.User || attrs.user || '',
+      password,
+      database: attrs.Database || attrs.database || attrs.InitialDatabase || '',
     }
   }
   
-  return connections
+  // 收集所有属性字符串
+  const attrStrings: string[] = []
+  
+  // 匹配自闭合标签
+  let match
+  while ((match = selfClosingRegex.exec(content)) !== null) {
+    attrStrings.push(match[1])
+  }
+  
+  // 匹配非自闭合标签
+  while ((match = openTagRegex.exec(content)) !== null) {
+    attrStrings.push(match[1])
+  }
+  
+  // 并行处理所有连接
+  const connectionPromises = attrStrings.map(async (attrString) => {
+    const attrs = parseAttrs(attrString)
+    return await createConnection(attrs)
+  })
+  
+  const results = await Promise.all(connectionPromises)
+  
+  // 过滤掉 null 值
+  for (const conn of results) {
+    if (conn) connections.push(conn)
+  }
+  
+  // 去重（基于名称）
+  const uniqueConnections = connections.filter((conn, index, self) =>
+    index === self.findIndex(c => c.name === conn.name)
+  )
+  
+  return uniqueConnections
+}
+
+// NCX 解析 - 同步版本（不解密密码，保留兼容性）
+function parseNcx(content: string): any[] {
+  const connections: any[] = []
+  
+  // 尝试匹配两种格式:
+  // 1. 自闭合: <Connection ... />
+  // 2. 非自闭合: <Connection ...>...</Connection>
+  const selfClosingRegex = /<Connection\s+([^>]*?)\/>/gi
+  const openTagRegex = /<Connection\s+([^>]*?)>/gi
+  
+  // 解析属性的辅助函数
+  const parseAttrs = (attrString: string): Record<string, string> => {
+    const attrs: Record<string, string> = {}
+    const attrRegex = /(\w+)\s*=\s*"([^"]*)"/g
+    let match
+    while ((match = attrRegex.exec(attrString)) !== null) {
+      attrs[match[1]] = match[2]
+    }
+    return attrs
+  }
+  
+  // 从属性创建连接对象
+  const createConnection = (attrs: Record<string, string>) => {
+    // 支持多种属性名称格式
+    const name = attrs.ConnectionName || attrs.Name || attrs.connection_name || ''
+    if (!name) return null
+    
+    // 类型映射
+    let type = (attrs.ConnType || attrs.Type || attrs.conn_type || 'mysql').toLowerCase()
+    if (type === 'postgresql') type = 'postgres'
+    if (type === 'sql server' || type === 'mssql') type = 'sqlserver'
+    
+    return {
+      id: crypto.randomUUID(),
+      name,
+      type,
+      host: attrs.Host || attrs.host || attrs.Server || 'localhost',
+      port: parseInt(attrs.Port || attrs.port || '3306') || 3306,
+      username: attrs.UserName || attrs.Username || attrs.User || attrs.user || '',
+      password: attrs.Password || attrs.password || '',
+      database: attrs.Database || attrs.database || attrs.InitialDatabase || '',
+    }
+  }
+  
+  // 匹配自闭合标签
+  let match
+  while ((match = selfClosingRegex.exec(content)) !== null) {
+    const attrs = parseAttrs(match[1])
+    const conn = createConnection(attrs)
+    if (conn) connections.push(conn)
+  }
+  
+  // 匹配非自闭合标签
+  while ((match = openTagRegex.exec(content)) !== null) {
+    const attrs = parseAttrs(match[1])
+    const conn = createConnection(attrs)
+    if (conn) connections.push(conn)
+  }
+  
+  // 去重（基于名称）
+  const uniqueConnections = connections.filter((conn, index, self) =>
+    index === self.findIndex(c => c.name === conn.name)
+  )
+  
+  return uniqueConnections
 }
 
 function generateNcx(connections: any[]): string {

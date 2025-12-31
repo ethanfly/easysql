@@ -72,5 +72,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectFile: (extensions) => ipcRenderer.invoke('file:select', extensions),
   saveDialog: (options) => ipcRenderer.invoke('file:saveDialog', options),
   writeFile: (filePath, content) => ipcRenderer.invoke('file:write', filePath, content),
-  readFile: (filePath) => ipcRenderer.invoke('file:read', filePath)
+  readFile: (filePath) => ipcRenderer.invoke('file:read', filePath),
+
+  // 密码解密
+  decryptNavicatPassword: (encryptedPassword, version) => 
+    ipcRenderer.invoke('crypto:decryptNavicatPassword', encryptedPassword, version)
 })

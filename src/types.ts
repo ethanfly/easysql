@@ -21,6 +21,7 @@ export interface QueryTab {
   id: string
   title: string
   sql: string
+  connectionId?: string  // 所属连接ID
   results: {
     columns: string[]
     rows: any[]

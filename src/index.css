@@ -367,10 +367,56 @@ button:focus:not(:focus-visible) {
   cursor: pointer;
   transition: background 0.1s;
   flex-shrink: 0;
+  position: relative;
 }
 
 .navi-header-cell:hover {
   background: #f1f5f9;
+}
+
+.navi-header-cell.resizing {
+  background: #dbeafe;
+}
+
+/* 列宽拖动手柄 */
+.navi-resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 10;
+  transition: background 0.15s;
+}
+
+.navi-resize-handle:hover,
+.navi-header-cell.resizing .navi-resize-handle {
+  background: #3b82f6;
+}
+
+.navi-resize-handle::after {
+  content: '';
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 16px;
+  background: #cbd5e1;
+  border-radius: 1px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.navi-header-cell:hover .navi-resize-handle::after {
+  opacity: 1;
+}
+
+.navi-header-cell.resizing .navi-resize-handle::after {
+  opacity: 1;
+  background: white;
 }
 
 .navi-col-name {
@@ -411,6 +457,21 @@ button:focus:not(:focus-visible) {
 
 .navi-row.selected {
   background: rgba(59, 130, 246, 0.08);
+}
+
+/* 空白填充行 */
+.navi-row.empty-row {
+  background: #fcfcfd;
+}
+
+.navi-row-number.empty {
+  background: #fafafa;
+  border-right: 1px solid #e2e8f0;
+}
+
+.navi-cell.empty {
+  background: transparent;
+  border-right: 1px solid #f1f5f9;
 }
 
 /* 行号 */
@@ -494,6 +555,71 @@ button:focus:not(:focus-visible) {
   outline: none;
   font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
+}
+
+/* 日期单元格通用样式 */
+.navi-date-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  height: 100%;
+}
+
+.navi-date-icon {
+  flex-shrink: 0;
+  color: #60a5fa;
+}
+
+.navi-date-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #1e293b;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+
+/* 日期编辑状态 - 与未编辑状态保持一致 */
+.navi-date-cell-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  position: absolute;
+  inset: 0;
+  padding: 0 10px;
+  background: transparent;
+}
+
+.navi-date-input-field {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: #1e293b;
+  color: #1e293b;
+}
+
+.navi-date-input-field::placeholder {
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+
+/* 日期时间选择器动画 */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* 右键菜单 */
@@ -648,7 +774,9 @@ button:focus:not(:focus-visible) {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .navi-header-row {
