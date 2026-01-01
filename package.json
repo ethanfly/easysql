@@ -63,6 +63,17 @@
       "target": "nsis",
       "icon": "public/icon.ico"
     },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "installerIcon": "public/icon.ico",
+      "uninstallerIcon": "public/icon.ico",
+      "installerHeaderIcon": "public/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "EasySQL"
+    },
     "mac": {
       "target": "dmg",
       "icon": "public/icon.icns"

@@ -31,8 +31,11 @@ async function initSqlite() {
 }
 
 function createWindow() {
+  // 判断是否为开发模式（检查是否有 Vite 开发服务器运行）
+  const isDev = !app.isPackaged
+  
   // 图标路径（开发和生产环境不同）
-  const iconPath = process.env.NODE_ENV !== 'production'
+  const iconPath = isDev
     ? path.join(__dirname, '../public/icon.png')
     : path.join(__dirname, '../dist/icon.png')
   
@@ -42,8 +45,9 @@ function createWindow() {
     minWidth: 1000,
     minHeight: 700,
     frame: false,
-    backgroundColor: '#1e1e1e',
+    backgroundColor: '#f8fafc', // 浅色主题背景色
     icon: iconPath,
+    show: false, // 先隐藏窗口，等加载完成再显示
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -51,13 +55,28 @@ function createWindow() {
     }
   })
 
+  // 窗口准备好后再显示，避免白屏/黑屏闪烁
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show()
+  })
+
   // 开发模式下加载 Vite 开发服务器
-  if (process.env.NODE_ENV !== 'production') {
+  if (isDev) {
     mainWindow.loadURL('http://localhost:5173')
     // mainWindow.webContents.openDevTools()
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
+    // 生产模式加载打包后的文件
+    const indexPath = path.join(__dirname, '../dist/index.html')
+    console.log('Loading:', indexPath)
+    mainWindow.loadFile(indexPath).catch(err => {
+      console.error('Failed to load index.html:', err)
+    })
   }
+  
+  // 加载失败时的错误处理
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    console.error('Page failed to load:', errorCode, errorDescription)
+  })
 }
 
 app.whenReady().then(async () => {
