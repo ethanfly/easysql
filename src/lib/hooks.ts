@@ -325,14 +325,16 @@ export function useTableOperations(showNotification: (type: 'success' | 'error' 
   const [tablesMap, setTablesMap] = useState<Map<string, TableInfo[]>>(new Map())
   const [columnsMap, setColumnsMap] = useState<Map<string, ColumnInfo[]>>(new Map())
 
-  const fetchTables = useCallback(async (connectionId: string, database: string) => {
+  const fetchTables = useCallback(async (connectionId: string, database: string): Promise<TableInfo[]> => {
     try {
       const tables = await api.getTables(connectionId, database)
       // 使用 connectionId_database 作为 key，避免不同连接同名数据库冲突
       const key = `${connectionId}_${database}`
       setTablesMap(prev => new Map(prev).set(key, tables))
+      return tables
     } catch (err) {
       showNotification('error', '获取表列表失败')
+      return []
     }
   }, [showNotification])
 

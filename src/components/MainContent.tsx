@@ -49,6 +49,7 @@ interface Props {
   onDeleteNewRow?: (tabId: string, rowIndex: number) => void
   onSelectConnection?: (connectionId: string) => void
   onSelectDatabase?: (database: string, connectionId: string) => void
+  onFetchTableColumns?: (tableName: string) => Promise<void>
   loadingTables?: Set<string>
 }
 
@@ -83,6 +84,7 @@ const MainContent = memo(function MainContent({
   onDeleteNewRow,
   onSelectConnection,
   onSelectDatabase,
+  onFetchTableColumns,
   loadingTables,
 }: Props) {
   useEffect(() => {
@@ -202,6 +204,7 @@ const MainContent = memo(function MainContent({
               onUpdateTitle={(title) => onUpdateTabTitle(currentTab.id, title)}
               onSelectConnection={onSelectConnection}
               onSelectDatabase={onSelectDatabase}
+              onFetchTableColumns={onFetchTableColumns}
             />
           )
         ) : null}
@@ -523,7 +526,7 @@ const TableViewer = memo(function TableViewer({
 // 查询编辑器
 const QueryEditor = memo(function QueryEditor({ 
   tab, connectionId, selectedDatabase, connections, connectedIds, databasesMap, databases, tables, columns, 
-  onRun, onUpdateSql, onUpdateTitle, onSelectConnection, onSelectDatabase
+  onRun, onUpdateSql, onUpdateTitle, onSelectConnection, onSelectDatabase, onFetchTableColumns
 }: { 
   tab: QueryTab
   connectionId: string | null
@@ -539,6 +542,7 @@ const QueryEditor = memo(function QueryEditor({
   onUpdateTitle?: (title: string) => void
   onSelectConnection?: (connectionId: string) => void
   onSelectDatabase?: (database: string, connectionId: string) => void
+  onFetchTableColumns?: (tableName: string) => Promise<void>
 }) {
   const [showConnectionMenu, setShowConnectionMenu] = useState(false)
   const [showDatabaseMenu, setShowDatabaseMenu] = useState(false)
@@ -1022,8 +1026,8 @@ const QueryEditor = memo(function QueryEditor({
         </div>
         <div style={{ flex: 1, minHeight: 0 }}>
           <Suspense fallback={<EditorLoading />}>
-            <SqlEditor value={sql} onChange={setSql} onRun={handleRun} onSave={handleSaveFile} onOpen={handleOpenFile} onFormat={handleFormat}
-              databases={databases} tables={tables} columns={columns} />
+            <SqlEditor value={sql} onChange={(v) => { setSql(v); onUpdateSql(v) }} onRun={handleRun} onSave={handleSaveFile} onOpen={handleOpenFile} onFormat={handleFormat}
+              databases={databases} tables={tables} columns={columns} onFetchTableColumns={onFetchTableColumns} />
           </Suspense>
         </div>
       </div>

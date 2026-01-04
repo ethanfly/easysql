@@ -174,8 +174,7 @@ function App() {
     setLoadingDbSet(prev => new Set(prev).add(dbKey))
     try {
       await fetchTables(connectionId, db)
-      const tables = tablesMap.get(dbKey) || []
-      await Promise.all(tables.map(t => fetchColumns(connectionId, db, t.name)))
+      // 列信息按需获取（打开表时、SQL补全时），不在此处批量获取
     } finally {
       setLoadingDbSet(prev => {
         const next = new Set(prev)
@@ -183,7 +182,7 @@ function App() {
         return next
       })
     }
-  }, [fetchTables, fetchColumns, tablesMap, setLoadingDbSet])
+  }, [fetchTables, setLoadingDbSet])
 
   // 切换连接（在查询界面使用，会清空数据库选择）
   const handleConnectionChange = useCallback((connectionId: string) => {
@@ -193,6 +192,12 @@ function App() {
     }
     setActiveConnection(connectionId)
   }, [activeConnection])
+
+  // 获取表字段（用于 SQL 智能补全）
+  const handleFetchTableColumns = useCallback(async (tableName: string) => {
+    if (!activeConnection || !selectedDatabase) return
+    await fetchColumns(activeConnection, selectedDatabase, tableName)
+  }, [activeConnection, selectedDatabase, fetchColumns])
 
   // 打开表
   const handleOpenTable = useCallback(async (connectionId: string, database: string, tableName: string) => {
@@ -688,6 +693,7 @@ function App() {
           onDeleteNewRow={handleDeleteNewRow}
           onSelectConnection={handleConnectionChange}
           onSelectDatabase={handleSelectDatabase}
+          onFetchTableColumns={handleFetchTableColumns}
           loadingTables={loadingTables}
         />
       </div>

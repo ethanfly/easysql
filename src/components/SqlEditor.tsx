@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useCallback } from 'react'
 import Editor, { OnMount, loader } from '@monaco-editor/react'
 import * as monaco from 'monaco-editor'
 import { TableInfo, ColumnInfo } from '../types'
@@ -16,6 +16,7 @@ interface Props {
   databases: string[]
   tables: TableInfo[]
   columns: Map<string, ColumnInfo[]>
+  onFetchTableColumns?: (tableName: string) => Promise<void>  // 获取表字段的回调
 }
 
 // SQL 关键字分组
@@ -160,18 +161,69 @@ const SQL_TYPES = [
   'ENUM', 'SET', 'ARRAY'
 ]
 
-// 分析 SQL 上下文
+// SQL 比较操作符
+const SQL_OPERATORS = [
+  { label: '=', desc: '等于', insertText: '= ' },
+  { label: '<>', desc: '不等于', insertText: '<> ' },
+  { label: '!=', desc: '不等于', insertText: '!= ' },
+  { label: '>', desc: '大于', insertText: '> ' },
+  { label: '<', desc: '小于', insertText: '< ' },
+  { label: '>=', desc: '大于等于', insertText: '>= ' },
+  { label: '<=', desc: '小于等于', insertText: '<= ' },
+  { label: 'LIKE', desc: '模糊匹配', insertText: "LIKE '${1:%}'" },
+  { label: 'NOT LIKE', desc: '不匹配', insertText: "NOT LIKE '${1:%}'" },
+  { label: 'IN', desc: '在列表中', insertText: 'IN (${1:values})' },
+  { label: 'NOT IN', desc: '不在列表中', insertText: 'NOT IN (${1:values})' },
+  { label: 'BETWEEN', desc: '在范围内', insertText: 'BETWEEN ${1:start} AND ${2:end}' },
+  { label: 'NOT BETWEEN', desc: '不在范围内', insertText: 'NOT BETWEEN ${1:start} AND ${2:end}' },
+  { label: 'IS NULL', desc: '为空', insertText: 'IS NULL' },
+  { label: 'IS NOT NULL', desc: '不为空', insertText: 'IS NOT NULL' },
+  { label: 'EXISTS', desc: '存在子查询', insertText: 'EXISTS (${1:SELECT 1 FROM table WHERE condition})' },
+  { label: 'NOT EXISTS', desc: '不存在子查询', insertText: 'NOT EXISTS (${1:SELECT 1 FROM table WHERE condition})' },
+  { label: 'REGEXP', desc: '正则匹配(MySQL)', insertText: "REGEXP '${1:pattern}'" },
+  { label: '~', desc: '正则匹配(PostgreSQL)', insertText: "~ '${1:pattern}'" },
+]
+
+// LIKE 模式模板
+const LIKE_PATTERNS = [
+  { label: "'%value%'", desc: '包含value', insertText: "'%${1:value}%'" },
+  { label: "'value%'", desc: '以value开头', insertText: "'${1:value}%'" },
+  { label: "'%value'", desc: '以value结尾', insertText: "'%${1:value}'" },
+  { label: "'_value'", desc: '单字符+value', insertText: "'_${1:value}'" },
+  { label: "'%_%'", desc: '包含任意字符', insertText: "'%_%'" },
+]
+
+// WHERE 子句中的条件关键字
+const WHERE_KEYWORDS = [
+  { label: 'AND', desc: '并且', insertText: 'AND ' },
+  { label: 'OR', desc: '或者', insertText: 'OR ' },
+  { label: 'NOT', desc: '非', insertText: 'NOT ' },
+  { label: 'IN', desc: '在列表中', insertText: 'IN (${1:values})' },
+  { label: 'BETWEEN', desc: '在范围内', insertText: 'BETWEEN ${1:start} AND ${2:end}' },
+  { label: 'LIKE', desc: '模糊匹配', insertText: "LIKE '${1:%}'" },
+  { label: 'IS', desc: 'IS 判断', insertText: 'IS ' },
+  { label: 'NULL', desc: '空值', insertText: 'NULL' },
+  { label: 'TRUE', desc: '真', insertText: 'TRUE' },
+  { label: 'FALSE', desc: '假', insertText: 'FALSE' },
+  { label: 'EXISTS', desc: '存在子查询', insertText: 'EXISTS (' },
+]
+
+// 分析 SQL 上下文（增强版）
 function analyzeSqlContext(textBeforeCursor: string): {
-  context: 'select_columns' | 'from_table' | 'where_condition' | 'join_table' | 'on_condition' | 'order_by' | 'group_by' | 'insert_table' | 'update_table' | 'set_column' | 'values' | 'into_columns' | 'general',
+  context: 'select_columns' | 'from_table' | 'where_condition' | 'where_after_column' | 'where_after_operator' | 'where_after_and_or' | 'join_table' | 'on_condition' | 'order_by' | 'group_by' | 'insert_table' | 'update_table' | 'set_column' | 'values' | 'into_columns' | 'general',
   tableAlias: Map<string, string>, // 别名 -> 表名
   currentTable: string | null, // 当前正在输入的表名（用于 table. 场景）
   referencedTables: string[], // 已引用的表名
   lastWord: string, // 最后一个单词
+  lastColumn: string | null, // 最后一个字段名（用于操作符推荐）
+  inLikePattern: boolean, // 是否在 LIKE 模式中
 } {
   const text = textBeforeCursor.toUpperCase()
   const tableAlias = new Map<string, string>()
   let currentTable: string | null = null
   const referencedTables: string[] = []
+  let lastColumn: string | null = null
+  let inLikePattern = false
   
   // 提取表别名和引用的表 (FROM table AS alias 或 FROM table alias 或 JOIN table alias)
   const aliasRegex = /(?:FROM|JOIN|UPDATE)\s+[`\[\"]?(\w+)[`\]\"]?(?:\s+(?:AS\s+)?([A-Z]\w*))?/gi
@@ -198,6 +250,11 @@ function analyzeSqlContext(textBeforeCursor: string): {
   const lastWordMatch = textBeforeCursor.match(/(\w+)\s*$/i)
   const lastWord = lastWordMatch ? lastWordMatch[1].toUpperCase() : ''
   
+  // 检查是否在 LIKE 模式中
+  if (/LIKE\s+['"]$/i.test(textBeforeCursor) || /LIKE\s+['"][^'"]*$/i.test(textBeforeCursor)) {
+    inLikePattern = true
+  }
+  
   // 判断上下文
   let context: ReturnType<typeof analyzeSqlContext>['context'] = 'general'
   
@@ -211,10 +268,10 @@ function analyzeSqlContext(textBeforeCursor: string): {
     const beforeParen = textBeforeCursor.substring(0, lastOpenParen)
     if (/INSERT\s+INTO\s+\w+\s*$/i.test(beforeParen)) {
       context = 'into_columns'
-      return { context, tableAlias, currentTable, referencedTables, lastWord }
+      return { context, tableAlias, currentTable, referencedTables, lastWord, lastColumn, inLikePattern }
     } else if (/VALUES\s*$/i.test(beforeParen)) {
       context = 'values'
-      return { context, tableAlias, currentTable, referencedTables, lastWord }
+      return { context, tableAlias, currentTable, referencedTables, lastWord, lastColumn, inLikePattern }
     }
   }
   
@@ -238,15 +295,74 @@ function analyzeSqlContext(textBeforeCursor: string): {
   // 按位置排序，找到最后一个关键字
   keywordPositions.sort((a, b) => b.index - a.index)
   
+  // 辅助函数：检查是否在 WHERE 或 HAVING 子句中
+  const isInWhereClause = () => {
+    return keywordPositions.some(kp => 
+      kp.keyword === 'WHERE' || kp.keyword === 'HAVING' || kp.keyword === 'AND' || kp.keyword === 'OR'
+    ) && !keywordPositions.some(kp => 
+      kp.keyword === 'ORDER BY' && kp.index > (keywordPositions.find(k => k.keyword === 'WHERE')?.index || -1)
+    )
+  }
+  
+  // 分析 WHERE 子句的细粒度上下文
+  const analyzeWhereContext = (afterKeyword: string): typeof context => {
+    const trimmed = afterKeyword.trim()
+    
+    // 如果后面是空的，说明刚输入完关键字，需要输入字段名
+    if (!trimmed) {
+      return 'where_condition'
+    }
+    
+    // 检查最后的 token 来判断上下文
+    // 模式: column operator value AND/OR column ...
+    
+    // 检查是否在操作符后面（刚输入完操作符，等待输入值）
+    const afterOperatorMatch = trimmed.match(/(?:=|<>|!=|>=|<=|>|<|LIKE|NOT\s+LIKE|IN|NOT\s+IN|BETWEEN|IS\s+NOT|IS|REGEXP|~)\s*$/i)
+    if (afterOperatorMatch) {
+      return 'where_after_operator'
+    }
+    
+    // 检查是否刚输入完字段名（准备输入操作符）
+    // 字段名后面通常跟着空格，且不是关键字
+    const lastToken = trimmed.split(/\s+/).pop() || ''
+    const isKeyword = ALL_KEYWORDS.includes(lastToken.toUpperCase())
+    const isOperator = /^(=|<>|!=|>=|<=|>|<|LIKE|NOT|IN|BETWEEN|IS|AND|OR|REGEXP|~)$/i.test(lastToken)
+    
+    // 如果最后一个 token 不是关键字也不是操作符，可能是字段名
+    if (lastToken && !isKeyword && !isOperator && /^\w+$/.test(lastToken)) {
+      // 检查是否有明确的字段名模式
+      // 表.字段格式 或者 关键字后跟字段名
+      if (/\w+\.\w+$/i.test(trimmed)) {
+        // table.column 格式，推荐操作符
+        lastColumn = lastToken.toLowerCase()
+        return 'where_after_column'
+      }
+      // 检查上下文是否表明这是一个字段名
+      // 如果最后一个非空 token 看起来像字段名（不是数字、不是字符串常量）
+      if (!/^['"]/.test(lastToken) && !/^\d+$/.test(lastToken)) {
+        // 如果前面的内容表明这是一个字段（而不是值）
+        const tokens = trimmed.split(/\s+/)
+        if (tokens.length === 1 || 
+            (tokens.length >= 2 && /^(AND|OR|NOT)$/i.test(tokens[tokens.length - 2]))) {
+          // 刚输入完字段名，推荐操作符
+          lastColumn = lastToken.toLowerCase()
+          return 'where_after_column'
+        }
+      }
+    }
+    
+    // 检查是否刚输入完 AND 或 OR
+    if (/\b(AND|OR)\s*$/i.test(trimmed)) {
+      return 'where_after_and_or'
+    }
+    
+    // 默认 WHERE 条件上下文（推荐字段）
+    return 'where_condition'
+  }
+  
   if (keywordPositions.length > 0) {
     const lastKeyword = keywordPositions[0].keyword
     const afterKeyword = text.substring(keywordPositions[0].index + lastKeyword.length)
-    
-    // 检查关键字后面是否有其他关键字（排除当前正在分析的关键字）
-    const hasSubsequentKeyword = keywordPositions.length > 1 && 
-      ['FROM', 'WHERE', 'JOIN', 'ORDER BY', 'GROUP BY', 'HAVING', 'LIMIT'].some(k => 
-        text.indexOf(k, keywordPositions[0].index + lastKeyword.length) > -1
-      )
     
     switch (lastKeyword) {
       case 'SELECT':
@@ -296,10 +412,26 @@ function analyzeSqlContext(textBeforeCursor: string): {
         break
         
       case 'WHERE':
+      case 'HAVING':
+        // 细粒度分析 WHERE 子句
+        context = analyzeWhereContext(afterKeyword)
+        break
+        
       case 'AND':
       case 'OR':
-      case 'HAVING':
-        context = 'where_condition'
+        // 检查是否在 WHERE 子句中（而不是 BETWEEN x AND y）
+        if (isInWhereClause()) {
+          // 检查是否是 BETWEEN ... AND 的情况
+          const beforeAnd = text.substring(0, keywordPositions[0].index)
+          if (lastKeyword === 'AND' && /BETWEEN\s+\S+\s*$/i.test(beforeAnd)) {
+            // BETWEEN ... AND 的情况，提示值
+            context = 'where_after_operator'
+          } else {
+            context = analyzeWhereContext(afterKeyword)
+          }
+        } else {
+          context = 'general'
+        }
         break
         
       case 'ORDER BY':
@@ -323,17 +455,21 @@ function analyzeSqlContext(textBeforeCursor: string): {
     }
   }
   
-  return { context, tableAlias, currentTable, referencedTables, lastWord }
+  return { context, tableAlias, currentTable, referencedTables, lastWord, lastColumn, inLikePattern }
 }
 
-export default function SqlEditor({ value, onChange, onRun, onSave, onOpen, onFormat, databases, tables, columns }: Props) {
+export default function SqlEditor({ value, onChange, onRun, onSave, onOpen, onFormat, databases, tables, columns, onFetchTableColumns }: Props) {
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<typeof monaco | null>(null)
   const disposableRef = useRef<monaco.IDisposable | null>(null)
   
+  // 用于追踪正在加载的表和已请求的表
+  const loadingTablesRef = useRef<Set<string>>(new Set())
+  const requestedTablesRef = useRef<Set<string>>(new Set())
+  
   // 使用 ref 保存最新的数据和回调
   const dataRef = useRef({ databases, tables, columns })
-  const callbacksRef = useRef({ onRun, onSave, onOpen, onFormat })
+  const callbacksRef = useRef({ onRun, onSave, onOpen, onFormat, onFetchTableColumns })
   
   // 更新 ref 中的数据
   useEffect(() => {
@@ -342,8 +478,39 @@ export default function SqlEditor({ value, onChange, onRun, onSave, onOpen, onFo
   
   // 更新 ref 中的回调
   useEffect(() => {
-    callbacksRef.current = { onRun, onSave, onOpen, onFormat }
-  }, [onRun, onSave, onOpen, onFormat])
+    callbacksRef.current = { onRun, onSave, onOpen, onFormat, onFetchTableColumns }
+  }, [onRun, onSave, onOpen, onFormat, onFetchTableColumns])
+  
+  // 自动获取 SQL 中引用的表的列信息
+  const fetchReferencedTableColumns = useCallback(async (referencedTables: string[]) => {
+    const { columns: cols } = dataRef.current
+    const { onFetchTableColumns: fetchFn } = callbacksRef.current
+    
+    if (!fetchFn) return
+    
+    for (const tableName of referencedTables) {
+      // 检查是否已有列信息
+      const hasColumns = cols.has(tableName) || 
+        [...cols.keys()].some(name => name.toLowerCase() === tableName.toLowerCase())
+      
+      // 检查是否已经请求过或正在加载
+      if (hasColumns || requestedTablesRef.current.has(tableName) || loadingTablesRef.current.has(tableName)) {
+        continue
+      }
+      
+      // 标记为正在加载
+      loadingTablesRef.current.add(tableName)
+      requestedTablesRef.current.add(tableName)
+      
+      try {
+        await fetchFn(tableName)
+      } catch (e) {
+        console.error(`获取表 ${tableName} 列信息失败:`, e)
+      } finally {
+        loadingTablesRef.current.delete(tableName)
+      }
+    }
+  }, [])
 
   const handleEditorMount: OnMount = (editor, monacoInstance) => {
     editorRef.current = editor
@@ -369,10 +536,19 @@ export default function SqlEditor({ value, onChange, onRun, onSave, onOpen, onFo
           endColumn: position.column,
         })
         
-        const { context, tableAlias, currentTable, referencedTables } = analyzeSqlContext(textBeforeCursor)
+        const { context, tableAlias, currentTable, referencedTables, lastColumn, inLikePattern } = analyzeSqlContext(textBeforeCursor)
 
         // 获取最新的数据
         const { databases: dbs, tables: tbls, columns: cols } = dataRef.current
+
+        // 自动获取引用表的列信息（异步，不阻塞补全）
+        const tablesToFetch = [...referencedTables]
+        if (currentTable && !tablesToFetch.includes(currentTable)) {
+          tablesToFetch.push(currentTable)
+        }
+        if (tablesToFetch.length > 0) {
+          fetchReferencedTableColumns(tablesToFetch)
+        }
 
         const suggestions: monaco.languages.CompletionItem[] = []
 
@@ -551,6 +727,76 @@ export default function SqlEditor({ value, onChange, onRun, onSave, onOpen, onFo
           }
         }
 
+        // 添加操作符建议
+        const addOperators = (priority: string = '!0') => {
+          SQL_OPERATORS.forEach((op, idx) => {
+            const isSnippet = op.insertText.includes('${')
+            suggestions.push({
+              label: op.label,
+              kind: monacoInstance.languages.CompletionItemKind.Operator,
+              insertText: op.insertText,
+              insertTextRules: isSnippet 
+                ? monacoInstance.languages.CompletionItemInsertTextRule.InsertAsSnippet 
+                : undefined,
+              range,
+              detail: `⚡ ${op.desc}`,
+              sortText: priority + String(idx).padStart(2, '0'),
+            })
+          })
+        }
+        
+        // 添加 WHERE 条件关键字
+        const addWhereKeywords = (priority: string = '!0') => {
+          WHERE_KEYWORDS.forEach((kw, idx) => {
+            const isSnippet = kw.insertText.includes('${')
+            suggestions.push({
+              label: kw.label,
+              kind: monacoInstance.languages.CompletionItemKind.Keyword,
+              insertText: kw.insertText,
+              insertTextRules: isSnippet 
+                ? monacoInstance.languages.CompletionItemInsertTextRule.InsertAsSnippet 
+                : undefined,
+              range,
+              detail: `🔑 ${kw.desc}`,
+              sortText: priority + String(idx).padStart(2, '0'),
+            })
+          })
+        }
+        
+        // 添加 LIKE 模式模板
+        const addLikePatterns = (priority: string = '!0') => {
+          LIKE_PATTERNS.forEach((pattern, idx) => {
+            suggestions.push({
+              label: pattern.label,
+              kind: monacoInstance.languages.CompletionItemKind.Value,
+              insertText: pattern.insertText,
+              insertTextRules: monacoInstance.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+              range,
+              detail: `🎯 ${pattern.desc}`,
+              sortText: priority + String(idx).padStart(2, '0'),
+            })
+          })
+        }
+        
+        // 添加表名（带别名格式）用于 WHERE 条件
+        const addTablesForCondition = (priority: string = '2') => {
+          tbls.forEach(table => {
+            // 表名.字段名 的补全
+            suggestions.push({
+              label: table.name + '.',
+              kind: monacoInstance.languages.CompletionItemKind.Class,
+              insertText: table.name + '.',
+              range,
+              detail: `📋 ${table.name} 的字段`,
+              command: {
+                id: 'editor.action.triggerSuggest',
+                title: 'Trigger Suggest'
+              },
+              sortText: priority + table.name,
+            })
+          })
+        }
+
         // 根据上下文添加建议
         switch (context) {
           case 'select_columns':
@@ -575,16 +821,95 @@ export default function SqlEditor({ value, onChange, onRun, onSave, onOpen, onFo
           case 'update_table':
             // FROM/JOIN/INSERT/UPDATE 后 只 提示表名和数据库，直接返回
             addTables('!0')  // 表名最优先
+            // 如果没有表列表，从 columns 的键中提取表名作为备选
+            if (tbls.length === 0 && cols.size > 0) {
+              cols.forEach((_, tableName) => {
+                suggestions.push({
+                  label: tableName,
+                  kind: monacoInstance.languages.CompletionItemKind.Class,
+                  insertText: tableName,
+                  range,
+                  detail: '📋 表',
+                  sortText: '!0' + tableName,
+                })
+              })
+            }
             addDatabases('1')
+            // 如果完全没有数据，添加提示
+            if (suggestions.length === 0) {
+              suggestions.push({
+                label: '请先选择数据库',
+                kind: monacoInstance.languages.CompletionItemKind.Text,
+                insertText: '',
+                range,
+                detail: '💡 提示：请在上方选择连接和数据库',
+                sortText: '0',
+              })
+            }
             return { suggestions }  // 直接返回，不添加代码片段
             
           case 'where_condition':
           case 'on_condition':
             // WHERE/ON 后优先提示当前表字段
             addReferencedColumns('!0')  // 当前引用表字段最优先
-            addColumns('2', false)  // 其他表字段
-            addFunctions(['conditional', 'string', 'datetime'], '3')
-            addKeywords('8')
+            addColumns('!1', false)  // 所有表字段（不带前缀，更简洁）
+            addWhereKeywords('3')  // AND, OR 等关键字
+            addTablesForCondition('4')  // 表名（可触发字段补全）- 降低优先级
+            addFunctions(['conditional', 'string', 'datetime'], '5')
+            addDatabases('6')
+            return { suggestions }
+            
+          case 'where_after_column':
+            // 字段名后，优先推荐操作符
+            addOperators('!0')
+            addWhereKeywords('1')
+            return { suggestions }
+            
+          case 'where_after_operator':
+            // 操作符后，推荐值相关的内容
+            if (inLikePattern) {
+              addLikePatterns('!0')
+            }
+            // 先推荐常用值
+            suggestions.push({
+              label: 'NULL',
+              kind: monacoInstance.languages.CompletionItemKind.Constant,
+              insertText: 'NULL',
+              range,
+              detail: '空值',
+              sortText: '!00',
+            })
+            addReferencedColumns('!1')  // 可能是子查询或关联字段
+            addFunctions(['datetime', 'string', 'conditional'], '!2')
+            addLikePatterns('2')  // LIKE 模式备选
+            addWhereKeywords('3')
+            return { suggestions }
+            
+          case 'where_after_and_or':
+            // AND/OR 后，开始新条件，推荐字段名
+            addReferencedColumns('!0')  // 当前引用表字段最优先
+            addColumns('!1', false)  // 所有表字段（不带前缀）
+            // 也可以是 NOT, EXISTS 等
+            suggestions.push({
+              label: 'NOT',
+              kind: monacoInstance.languages.CompletionItemKind.Keyword,
+              insertText: 'NOT ',
+              range,
+              detail: '🔑 非',
+              sortText: '2not',
+            })
+            suggestions.push({
+              label: 'EXISTS',
+              kind: monacoInstance.languages.CompletionItemKind.Keyword,
+              insertText: 'EXISTS (${1:SELECT 1 FROM table WHERE condition})',
+              insertTextRules: monacoInstance.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+              range,
+              detail: '🔑 存在子查询',
+              sortText: '2exists',
+            })
+            addTablesForCondition('3')  // 表名（降低优先级）
+            addFunctions(['conditional'], '4')
+            addDatabases('5')
             return { suggestions }
             
           case 'order_by':
@@ -594,6 +919,25 @@ export default function SqlEditor({ value, onChange, onRun, onSave, onOpen, onFo
             addColumns('2', false)
             if (context === 'group_by') {
               addFunctions(['aggregate'], '3')
+            }
+            // ORDER BY 后提示 ASC/DESC
+            if (context === 'order_by') {
+              suggestions.push({
+                label: 'ASC',
+                kind: monacoInstance.languages.CompletionItemKind.Keyword,
+                insertText: 'ASC',
+                range,
+                detail: '🔑 升序',
+                sortText: '1asc',
+              })
+              suggestions.push({
+                label: 'DESC',
+                kind: monacoInstance.languages.CompletionItemKind.Keyword,
+                insertText: 'DESC',
+                range,
+                detail: '🔑 降序',
+                sortText: '1desc',
+              })
             }
             return { suggestions }
             

@@ -354,20 +354,18 @@ async function isConnectionAlive(conn, type) {
 }
 
 // 确保连接有效，如果断开则自动重连
-async function ensureConnection(id) {
-  console.log(`[Connection] 检查连接: id=${id}`)
+async function ensureConnection(id, skipAliveCheck = false) {
   const connInfo = connections.get(id)
   if (!connInfo) {
     console.log(`[Connection] 连接不存在: id=${id}`)
     return null
   }
 
-  // 检查 SSH 隧道是否有效
+  // 检查 SSH 隧道是否有效（仅当启用 SSH 时）
   if (connInfo.config?.sshEnabled) {
     const tunnel = sshTunnels.get(id)
     if (!tunnel || !tunnel.ssh) {
       console.log(`[Connection] SSH 隧道已失效，重新创建...`)
-      // SSH 隧道已断开，需要重建
       try {
         await closeConnection(connInfo.connection, connInfo.type, id)
       } catch (e) {}
@@ -385,23 +383,31 @@ async function ensureConnection(id) {
     }
   }
 
-  // 检查连接是否有效
+  // 连接池类型（MySQL/PostgreSQL）自动管理连接，跳过 alive 检查
+  // 只有在查询真正失败时才需要重连
+  if (skipAliveCheck) {
+    return connInfo
+  }
+
+  // 非连接池类型才需要检查连接状态
+  const poolTypes = ['mysql', 'mariadb', 'postgresql', 'postgres']
+  if (poolTypes.includes(connInfo.type)) {
+    return connInfo  // 连接池自动管理，直接返回
+  }
+
+  // 其他类型检查连接是否有效
   const alive = await isConnectionAlive(connInfo.connection, connInfo.type)
-  console.log(`[Connection] 连接状态: alive=${alive}`)
   
   if (!alive && connInfo.config) {
-    console.log(`[Connection] 连接 ${id} 已断开，尝试重新连接...`)
+    console.log(`[Connection] 连接已断开，尝试重新连接: id=${id}`)
     try {
-      // 尝试关闭旧连接和 SSH 隧道
       try {
         await closeConnection(connInfo.connection, connInfo.type, id)
       } catch (e) {}
       
-      // 重新建立连接（包括 SSH 隧道）
       const newConn = await createConnection(connInfo.config, id)
       connections.set(id, { connection: newConn, type: connInfo.type, config: connInfo.config })
-      const sshNote = connInfo.config.sshEnabled ? '（通过 SSH 隧道）' : ''
-      console.log(`[Connection] 重新连接成功${sshNote}`)
+      console.log(`[Connection] 重新连接成功`)
       return connections.get(id)
     } catch (e) {
       console.error(`[Connection] 重新连接失败:`, e.message)
@@ -475,7 +481,6 @@ ipcMain.handle('db:getTables', async (event, id, database) => {
 })
 
 ipcMain.handle('db:getColumns', async (event, id, database, table) => {
-  console.log(`[Columns] 获取列信息: id=${id}, db=${database}, table=${table}`)
   const connInfo = await ensureConnection(id)
   if (!connInfo) {
     console.error(`[Columns] 连接不存在: id=${id}`)
@@ -483,9 +488,7 @@ ipcMain.handle('db:getColumns', async (event, id, database, table) => {
   }
 
   try {
-    const cols = await getColumns(connInfo.connection, connInfo.type, database, table)
-    console.log(`[Columns] 获取成功: ${cols.length} 列`)
-    return cols
+    return await getColumns(connInfo.connection, connInfo.type, database, table)
   } catch (e) {
     console.error('[Columns] 获取列信息失败:', e.message)
     return []
