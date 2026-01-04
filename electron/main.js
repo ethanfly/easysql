@@ -3,6 +3,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
 import crypto from 'crypto'
+import net from 'net'
 import mysql from 'mysql2/promise'
 import pg from 'pg'
 import initSqlJs from 'sql.js'
@@ -10,16 +11,130 @@ import { MongoClient } from 'mongodb'
 import Redis from 'ioredis'
 import mssql from 'mssql'
 import Blowfish from 'blowfish-node'
+import { Client as SSHClient } from 'ssh2'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 // 存储活动的数据库连接
 const connections = new Map()
+// 存储活动的 SSH 隧道
+const sshTunnels = new Map()
 // 配置文件路径
 const configPath = path.join(app.getPath('userData'), 'connections.json')
 // SQL.js 初始化
 let SQL = null
+// 用于分配本地端口
+let nextLocalPort = 33060
+
+// ============ SSH 隧道管理 ============
+
+/**
+ * 创建 SSH 隧道
+ * @param {Object} config - 连接配置
+ * @returns {Promise<{ssh, server, localPort, localHost}>}
+ */
+async function createSSHTunnel(config) {
+  return new Promise((resolve, reject) => {
+    const ssh = new SSHClient()
+    const localPort = nextLocalPort++
+    
+    // 端口范围重置
+    if (nextLocalPort > 65000) nextLocalPort = 33060
+    
+    let server = null
+    let connected = false
+    
+    ssh.on('ready', () => {
+      console.log(`[SSH] 连接成功: ${config.sshUser}@${config.sshHost}:${config.sshPort}`)
+      connected = true
+      
+      // 创建本地 TCP 服务器进行端口转发
+      server = net.createServer((socket) => {
+        ssh.forwardOut(
+          '127.0.0.1', localPort,
+          config.host, config.port,
+          (err, stream) => {
+            if (err) {
+              console.error('[SSH] 转发失败:', err.message)
+              socket.end()
+              return
+            }
+            socket.pipe(stream).pipe(socket)
+          }
+        )
+      })
+      
+      server.listen(localPort, '127.0.0.1', () => {
+        console.log(`[SSH] 隧道就绪: localhost:${localPort} → ${config.host}:${config.port}`)
+        resolve({ ssh, server, localPort, localHost: '127.0.0.1' })
+      })
+      
+      server.on('error', (err) => {
+        console.error('[SSH] 本地服务器错误:', err.message)
+        ssh.end()
+        reject(err)
+      })
+    })
+    
+    ssh.on('error', (err) => {
+      console.error('[SSH] 连接错误:', err.message)
+      if (!connected) reject(new Error(`SSH 连接失败: ${err.message}`))
+    })
+    
+    ssh.on('close', () => {
+      console.log('[SSH] 连接已关闭')
+      if (server) server.close()
+    })
+    
+    // 构建 SSH 配置
+    const sshConfig = {
+      host: config.sshHost,
+      port: config.sshPort || 22,
+      username: config.sshUser,
+      readyTimeout: 10000,
+      keepaliveInterval: 10000,
+    }
+    
+    // 密码认证
+    if (config.sshPassword) {
+      sshConfig.password = config.sshPassword
+    }
+    
+    // 私钥认证
+    if (config.sshKey) {
+      try {
+        if (fs.existsSync(config.sshKey)) {
+          sshConfig.privateKey = fs.readFileSync(config.sshKey)
+        } else if (config.sshKey.includes('-----BEGIN')) {
+          sshConfig.privateKey = config.sshKey
+        }
+      } catch (e) {
+        console.warn('[SSH] 读取私钥失败:', e.message)
+      }
+    }
+    
+    console.log(`[SSH] 正在连接: ${config.sshUser}@${config.sshHost}:${config.sshPort}`)
+    ssh.connect(sshConfig)
+  })
+}
+
+/**
+ * 关闭 SSH 隧道
+ */
+function closeSSHTunnel(tunnelId) {
+  const tunnel = sshTunnels.get(tunnelId)
+  if (tunnel) {
+    try {
+      if (tunnel.server) tunnel.server.close()
+      if (tunnel.ssh) tunnel.ssh.end()
+      console.log(`[SSH] 隧道已关闭: ${tunnelId}`)
+    } catch (e) {
+      console.error('[SSH] 关闭隧道失败:', e.message)
+    }
+    sshTunnels.delete(tunnelId)
+  }
+}
 
 let mainWindow
 
@@ -91,15 +206,24 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  // 关闭所有数据库连接
+  // 关闭所有数据库连接和 SSH 隧道
   for (const [id, connInfo] of connections) {
     try {
-      closeConnection(connInfo.connection, connInfo.type)
+      closeConnection(connInfo.connection, connInfo.type, id)
     } catch (e) {
       console.error('关闭连接失败:', e)
     }
   }
   connections.clear()
+  
+  // 清理残留的 SSH 隧道
+  for (const [id, tunnel] of sshTunnels) {
+    try {
+      if (tunnel.server) tunnel.server.close()
+      if (tunnel.ssh) tunnel.ssh.end()
+    } catch (e) {}
+  }
+  sshTunnels.clear()
   
   if (process.platform !== 'darwin') {
     app.quit()
@@ -150,9 +274,10 @@ ipcMain.handle('config:save', async (event, connectionsList) => {
 // ============ 数据库操作 ============
 ipcMain.handle('db:test', async (event, config) => {
   try {
-    const conn = await createConnection(config)
-    await closeConnection(conn, config.type)
-    return { success: true, message: '连接成功' }
+    const conn = await createConnection(config, null)
+    await closeConnection(conn, config.type, null)
+    const msg = config.sshEnabled ? '通过 SSH 隧道连接成功' : '连接成功'
+    return { success: true, message: msg }
   } catch (e) {
     return { success: false, message: e.message }
   }
@@ -160,9 +285,10 @@ ipcMain.handle('db:test', async (event, config) => {
 
 ipcMain.handle('db:connect', async (event, config) => {
   try {
-    const conn = await createConnection(config)
+    const conn = await createConnection(config, config.id)
     connections.set(config.id, { connection: conn, type: config.type, config })
-    return { success: true, message: '连接成功' }
+    const msg = config.sshEnabled ? '通过 SSH 隧道连接成功' : '连接成功'
+    return { success: true, message: msg }
   } catch (e) {
     return { success: false, message: e.message }
   }
@@ -171,7 +297,7 @@ ipcMain.handle('db:connect', async (event, config) => {
 ipcMain.handle('db:disconnect', async (event, id) => {
   const connInfo = connections.get(id)
   if (connInfo) {
-    await closeConnection(connInfo.connection, connInfo.type)
+    await closeConnection(connInfo.connection, connInfo.type, id)
     connections.delete(id)
   }
 })
@@ -222,15 +348,16 @@ async function ensureConnection(id) {
   if (!alive && connInfo.config) {
     console.log(`连接 ${id} 已断开，尝试重新连接...`)
     try {
-      // 尝试关闭旧连接（忽略错误）
+      // 尝试关闭旧连接和 SSH 隧道
       try {
-        await closeConnection(connInfo.connection, connInfo.type)
+        await closeConnection(connInfo.connection, connInfo.type, id)
       } catch (e) {}
       
-      // 重新建立连接
-      const newConn = await createConnection(connInfo.config)
+      // 重新建立连接（包括 SSH 隧道）
+      const newConn = await createConnection(connInfo.config, id)
       connections.set(id, { connection: newConn, type: connInfo.type, config: connInfo.config })
-      console.log(`连接 ${id} 重新连接成功`)
+      const sshNote = connInfo.config.sshEnabled ? '（通过 SSH 隧道）' : ''
+      console.log(`连接 ${id} 重新连接成功${sshNote}`)
       return connections.get(id)
     } catch (e) {
       console.error(`连接 ${id} 重新连接失败:`, e.message)
@@ -1139,101 +1266,148 @@ function navicatXorDecrypt(encryptedBuffer) {
 }
 
 // ============ 数据库连接辅助函数 ============
-async function createConnection(config) {
-  const { type, host, port, username, password, database } = config
-
-  switch (type) {
-    case 'mysql':
-    case 'mariadb':
-      return await mysql.createConnection({
-        host,
-        port,
-        user: username,
-        password,
-        database: database || undefined,
-        connectTimeout: 10000,
-        dateStrings: true
-      })
-
-    case 'postgresql':
-    case 'postgres': {
-      const client = new pg.Client({
-        host,
-        port,
-        user: username,
-        password,
-        database: database || 'postgres',
-        connectionTimeoutMillis: 10000
-      })
-      await client.connect()
-      return client
-    }
-
-    case 'sqlite': {
-      await initSqlite()
-      const dbPath = host || database
-      let dbData = null
+async function createConnection(config, connectionId = null) {
+  let { type, host, port, username, password, database } = config
+  const originalHost = host  // 保存原始 host（SQLite 需要用）
+  
+  // 如果启用了 SSH 隧道，先建立隧道
+  let tunnel = null
+  if (config.sshEnabled && config.sshHost) {
+    console.log(`[DB] 为连接创建 SSH 隧道...`)
+    try {
+      tunnel = await createSSHTunnel(config)
+      host = tunnel.localHost
+      port = tunnel.localPort
       
-      if (dbPath && fs.existsSync(dbPath)) {
-        dbData = fs.readFileSync(dbPath)
+      // 保存隧道（正式连接时）
+      if (connectionId) {
+        sshTunnels.set(connectionId, tunnel)
       }
-      
-      const db = new SQL.Database(dbData)
-      db._path = dbPath
-      return db
+    } catch (e) {
+      throw new Error(`SSH 隧道失败: ${e.message}`)
     }
+  }
 
-    case 'mongodb': {
-      const uri = username && password
-        ? `mongodb://${username}:${password}@${host}:${port}/${database || 'admin'}?authSource=admin`
-        : `mongodb://${host}:${port}/${database || 'admin'}`
-      const client = new MongoClient(uri, { 
-        serverSelectionTimeoutMS: 10000,
-        connectTimeoutMS: 10000
-      })
-      await client.connect()
-      client._database = database || 'admin'
-      return client
-    }
+  try {
+    let conn
+    
+    switch (type) {
+      case 'mysql':
+      case 'mariadb':
+        conn = await mysql.createConnection({
+          host,
+          port,
+          user: username,
+          password,
+          database: database || undefined,
+          connectTimeout: 10000,
+          dateStrings: true
+        })
+        break
 
-    case 'redis': {
-      const redis = new Redis({
-        host,
-        port,
-        password: password || undefined,
-        db: parseInt(database) || 0,
-        connectTimeout: 10000,
-        lazyConnect: true
-      })
-      await redis.connect()
-      return redis
-    }
+      case 'postgresql':
+      case 'postgres': {
+        const client = new pg.Client({
+          host,
+          port,
+          user: username,
+          password,
+          database: database || 'postgres',
+          connectionTimeoutMillis: 10000
+        })
+        await client.connect()
+        conn = client
+        break
+      }
 
-    case 'sqlserver': {
-      const sqlConfig = {
-        user: username,
-        password,
-        database: database || 'master',
-        server: host,
-        port: port || 1433,
-        options: {
-          encrypt: false,
-          trustServerCertificate: true,
-          connectTimeout: 10000
+      case 'sqlite': {
+        await initSqlite()
+        const dbPath = originalHost || database  // SQLite 用原始路径
+        let dbData = null
+        
+        if (dbPath && fs.existsSync(dbPath)) {
+          dbData = fs.readFileSync(dbPath)
         }
+        
+        const db = new SQL.Database(dbData)
+        db._path = dbPath
+        conn = db
+        break
       }
-      const pool = await mssql.connect(sqlConfig)
-      pool._database = database || 'master'
-      return pool
-    }
 
-    default:
-      throw new Error(`不支持的数据库类型: ${type}`)
+      case 'mongodb': {
+        const uri = username && password
+          ? `mongodb://${username}:${password}@${host}:${port}/${database || 'admin'}?authSource=admin`
+          : `mongodb://${host}:${port}/${database || 'admin'}`
+        const client = new MongoClient(uri, { 
+          serverSelectionTimeoutMS: 10000,
+          connectTimeoutMS: 10000
+        })
+        await client.connect()
+        client._database = database || 'admin'
+        conn = client
+        break
+      }
+
+      case 'redis': {
+        const redis = new Redis({
+          host,
+          port,
+          password: password || undefined,
+          db: parseInt(database) || 0,
+          connectTimeout: 10000,
+          lazyConnect: true
+        })
+        await redis.connect()
+        conn = redis
+        break
+      }
+
+      case 'sqlserver': {
+        const sqlConfig = {
+          user: username,
+          password,
+          database: database || 'master',
+          server: host,
+          port: port || 1433,
+          options: {
+            encrypt: false,
+            trustServerCertificate: true,
+            connectTimeout: 10000
+          }
+        }
+        const pool = await mssql.connect(sqlConfig)
+        pool._database = database || 'master'
+        conn = pool
+        break
+      }
+
+      default:
+        throw new Error(`不支持的数据库类型: ${type}`)
+    }
+    
+    // 测试连接时，将隧道附加到连接对象
+    if (tunnel && !connectionId) {
+      conn._sshTunnel = tunnel
+    }
+    
+    return conn
+  } catch (e) {
+    // 连接失败时清理隧道
+    if (tunnel) {
+      try {
+        if (tunnel.server) tunnel.server.close()
+        if (tunnel.ssh) tunnel.ssh.end()
+      } catch (err) {}
+      if (connectionId) sshTunnels.delete(connectionId)
+    }
+    throw e
   }
 }
 
-async function closeConnection(conn, type) {
+async function closeConnection(conn, type, connectionId = null) {
   try {
+    // 关闭数据库连接
     switch (type) {
       case 'mysql':
       case 'mariadb':
@@ -1259,6 +1433,19 @@ async function closeConnection(conn, type) {
       case 'sqlserver':
         await conn.close()
         break
+    }
+    
+    // 关闭测试连接的 SSH 隧道
+    if (conn._sshTunnel) {
+      try {
+        if (conn._sshTunnel.server) conn._sshTunnel.server.close()
+        if (conn._sshTunnel.ssh) conn._sshTunnel.ssh.end()
+      } catch (e) {}
+    }
+    
+    // 关闭正式连接的 SSH 隧道
+    if (connectionId) {
+      closeSSHTunnel(connectionId)
     }
   } catch (e) {
     console.error('关闭连接时出错:', e)

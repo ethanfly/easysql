@@ -1,6 +1,6 @@
 {
   "name": "easysql",
-  "version": "2.0.1",
+  "version": "2.0.3",
   "description": "Modern Database Management Tool",
   "main": "electron/main.js",
   "type": "module",
@@ -15,7 +15,8 @@
     "version:patch": "node scripts/bump-version.js patch",
     "version:minor": "node scripts/bump-version.js minor",
     "version:major": "node scripts/bump-version.js major",
-    "icons": "node scripts/generate-icons.js"
+    "icons": "node scripts/generate-icons.js",
+    "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -28,7 +29,8 @@
     "mysql2": "^3.11.0",
     "pg": "^8.13.0",
     "sql-formatter": "^15.6.12",
-    "sql.js": "^1.11.0"
+    "sql.js": "^1.11.0",
+    "ssh2": "^1.16.0"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
@@ -57,7 +59,12 @@
     },
     "files": [
       "dist/**/*",
-      "electron/**/*"
+      "electron/**/*",
+      "node_modules/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/ssh2/**/*",
+      "node_modules/cpu-features/**/*"
     ],
     "win": {
       "target": "nsis",
