@@ -384,7 +384,7 @@ export default function ConnectionModal({ isOpen, editingConnection, initialType
                               className="flex-1 h-9 px-3 bg-white border border-border-default rounded-lg text-sm focus:border-primary-500 focus:shadow-focus"
                             />
                             <button onClick={handleSelectKeyFile}
-                              className="h-9 px-3 bg-white hover:bg-light-hover border border-border-default rounded-lg text-sm">
+                              className="h-9 px-3 bg-white hover:bg-light-hover border border-border-default rounded-lg text-sm text-text-primary font-medium">
                               浏览
                             </button>
                           </div>

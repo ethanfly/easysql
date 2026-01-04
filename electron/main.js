@@ -355,16 +355,42 @@ async function isConnectionAlive(conn, type) {
 
 // 确保连接有效，如果断开则自动重连
 async function ensureConnection(id) {
+  console.log(`[Connection] 检查连接: id=${id}`)
   const connInfo = connections.get(id)
   if (!connInfo) {
+    console.log(`[Connection] 连接不存在: id=${id}`)
     return null
+  }
+
+  // 检查 SSH 隧道是否有效
+  if (connInfo.config?.sshEnabled) {
+    const tunnel = sshTunnels.get(id)
+    if (!tunnel || !tunnel.ssh) {
+      console.log(`[Connection] SSH 隧道已失效，重新创建...`)
+      // SSH 隧道已断开，需要重建
+      try {
+        await closeConnection(connInfo.connection, connInfo.type, id)
+      } catch (e) {}
+      
+      try {
+        const newConn = await createConnection(connInfo.config, id)
+        connections.set(id, { connection: newConn, type: connInfo.type, config: connInfo.config })
+        console.log(`[Connection] SSH 隧道重建成功`)
+        return connections.get(id)
+      } catch (e) {
+        console.error(`[Connection] SSH 隧道重建失败:`, e.message)
+        connections.delete(id)
+        return null
+      }
+    }
   }
 
   // 检查连接是否有效
   const alive = await isConnectionAlive(connInfo.connection, connInfo.type)
+  console.log(`[Connection] 连接状态: alive=${alive}`)
   
   if (!alive && connInfo.config) {
-    console.log(`连接 ${id} 已断开，尝试重新连接...`)
+    console.log(`[Connection] 连接 ${id} 已断开，尝试重新连接...`)
     try {
       // 尝试关闭旧连接和 SSH 隧道
       try {
@@ -375,10 +401,10 @@ async function ensureConnection(id) {
       const newConn = await createConnection(connInfo.config, id)
       connections.set(id, { connection: newConn, type: connInfo.type, config: connInfo.config })
       const sshNote = connInfo.config.sshEnabled ? '（通过 SSH 隧道）' : ''
-      console.log(`连接 ${id} 重新连接成功${sshNote}`)
+      console.log(`[Connection] 重新连接成功${sshNote}`)
       return connections.get(id)
     } catch (e) {
-      console.error(`连接 ${id} 重新连接失败:`, e.message)
+      console.error(`[Connection] 重新连接失败:`, e.message)
       connections.delete(id)
       return null
     }
@@ -388,17 +414,23 @@ async function ensureConnection(id) {
 }
 
 ipcMain.handle('db:query', async (event, id, sql) => {
+  console.log(`[Query] 执行查询: id=${id}, sql=${sql.substring(0, 100)}...`)
   const connInfo = await ensureConnection(id)
   if (!connInfo) {
+    console.error(`[Query] 连接不存在: id=${id}`)
     return { columns: [], rows: [], error: '连接不存在或已断开，请重新连接' }
   }
 
+  console.log(`[Query] 连接有效: type=${connInfo.type}, hasSSH=${!!connInfo.config?.sshEnabled}`)
   try {
     const result = await executeQuery(connInfo.connection, connInfo.type, sql)
+    console.log(`[Query] 查询成功: columns=${result.columns?.length}, rows=${result.rows?.length}`)
     return result
   } catch (e) {
+    console.error(`[Query] 查询失败:`, e.message)
     // 如果是连接错误，尝试重连后再执行一次
     if (e.message.includes('closed') || e.message.includes('ECONNRESET') || e.message.includes('ETIMEDOUT')) {
+      console.log(`[Query] 尝试重连...`)
       const newConnInfo = await ensureConnection(id)
       if (newConnInfo) {
         try {
@@ -425,37 +457,56 @@ ipcMain.handle('db:getDatabases', async (event, id) => {
 })
 
 ipcMain.handle('db:getTables', async (event, id, database) => {
+  console.log(`[Tables] 获取表列表: id=${id}, database=${database}`)
   const connInfo = await ensureConnection(id)
-  if (!connInfo) return []
+  if (!connInfo) {
+    console.error(`[Tables] 连接不存在: id=${id}`)
+    return []
+  }
 
   try {
-    return await getTables(connInfo.connection, connInfo.type, database)
+    const tables = await getTables(connInfo.connection, connInfo.type, database)
+    console.log(`[Tables] 获取成功: ${tables.length} 个表`)
+    return tables
   } catch (e) {
-    console.error('获取表列表失败:', e)
+    console.error('[Tables] 获取表列表失败:', e.message)
     return []
   }
 })
 
 ipcMain.handle('db:getColumns', async (event, id, database, table) => {
+  console.log(`[Columns] 获取列信息: id=${id}, db=${database}, table=${table}`)
   const connInfo = await ensureConnection(id)
-  if (!connInfo) return []
+  if (!connInfo) {
+    console.error(`[Columns] 连接不存在: id=${id}`)
+    return []
+  }
 
   try {
-    return await getColumns(connInfo.connection, connInfo.type, database, table)
+    const cols = await getColumns(connInfo.connection, connInfo.type, database, table)
+    console.log(`[Columns] 获取成功: ${cols.length} 列`)
+    return cols
   } catch (e) {
-    console.error('获取列信息失败:', e)
+    console.error('[Columns] 获取列信息失败:', e.message)
     return []
   }
 })
 
 ipcMain.handle('db:getTableData', async (event, id, database, table, page, pageSize) => {
+  console.log(`[TableData] 获取表数据: id=${id}, db=${database}, table=${table}, page=${page}`)
   const connInfo = await ensureConnection(id)
-  if (!connInfo) return { columns: [], rows: [], total: 0, page, pageSize }
+  if (!connInfo) {
+    console.error(`[TableData] 连接不存在: id=${id}`)
+    return { columns: [], rows: [], total: 0, page, pageSize }
+  }
 
+  console.log(`[TableData] 连接有效: type=${connInfo.type}`)
   try {
-    return await getTableData(connInfo.connection, connInfo.type, database, table, page, pageSize)
+    const result = await getTableData(connInfo.connection, connInfo.type, database, table, page, pageSize)
+    console.log(`[TableData] 获取成功: columns=${result.columns?.length}, rows=${result.rows?.length}, total=${result.total}`)
+    return result
   } catch (e) {
-    console.error('获取表数据失败:', e)
+    console.error('[TableData] 获取表数据失败:', e.message)
     return { columns: [], rows: [], total: 0, page, pageSize }
   }
 })
@@ -1785,23 +1836,61 @@ async function getColumns(conn, type, database, table) {
 
 async function getTableData(conn, type, database, table, page = 1, pageSize = 100) {
   const offset = (page - 1) * pageSize
+  console.log(`[getTableData] 开始获取列信息...`)
   const columns = await getColumns(conn, type, database, table)
+  console.log(`[getTableData] 列信息获取完成: ${columns.length} 列`)
 
   switch (type) {
     case 'mysql':
     case 'mariadb': {
-      const [[{ total }]] = await conn.query(`SELECT COUNT(*) as total FROM \`${database}\`.\`${table}\``)
+      // 使用表状态获取估算行数（几乎瞬间完成，比 COUNT(*) 快得多）
+      console.log(`[getTableData] 获取表状态估算行数...`)
+      let total = 0
+      try {
+        const [statusRows] = await conn.query(
+          `SELECT TABLE_ROWS FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
+          [database, table]
+        )
+        total = statusRows[0]?.TABLE_ROWS || 0
+        console.log(`[getTableData] 估算行数: ${total}`)
+      } catch (e) {
+        console.log(`[getTableData] 获取估算行数失败，使用0`)
+      }
+      
+      console.log(`[getTableData] 执行 SELECT 查询...`)
       const [rows] = await conn.query(`SELECT * FROM \`${database}\`.\`${table}\` LIMIT ? OFFSET ?`, [pageSize, offset])
+      console.log(`[getTableData] SELECT 完成: ${rows.length} 行`)
       const data = rows.map(row => columns.map(col => row[col.name]))
+      
+      // 如果实际返回行数小于 pageSize 且是第一页，说明数据量小，使用实际数量
+      if (rows.length < pageSize && page === 1) {
+        total = rows.length
+      }
+      
       return { columns, rows: data, total, page, pageSize }
     }
 
     case 'postgresql':
     case 'postgres': {
-      const countResult = await conn.query(`SELECT COUNT(*) as total FROM "${table}"`)
-      const total = parseInt(countResult.rows[0].total)
+      // 使用 pg_class 获取估算行数（比 COUNT(*) 快得多）
+      let total = 0
+      try {
+        const estResult = await conn.query(
+          `SELECT reltuples::bigint AS estimate FROM pg_class WHERE relname = $1`,
+          [table]
+        )
+        total = parseInt(estResult.rows[0]?.estimate) || 0
+      } catch (e) {
+        console.log(`[getTableData] PostgreSQL 估算行数失败`)
+      }
+      
       const result = await conn.query(`SELECT * FROM "${table}" LIMIT $1 OFFSET $2`, [pageSize, offset])
       const data = result.rows.map(row => columns.map(col => row[col.name]))
+      
+      if (result.rows.length < pageSize && page === 1) {
+        total = result.rows.length
+      }
+      
       return { columns, rows: data, total, page, pageSize }
     }
 

@@ -549,6 +549,10 @@ export default function Sidebar({
                           <div className="px-2.5 py-2 text-sm text-text-muted">
                             无数据库或无权限
                           </div>
+                        ) : getFilteredDatabases(conn.id, connDatabases).length === 0 ? (
+                          <div className="px-2.5 py-2 text-sm text-text-muted">
+                            无匹配的数据库 (共 {connDatabases.length} 个)
+                          </div>
                         ) : getFilteredDatabases(conn.id, connDatabases).map(db => {
                           // 选中状态需要同时匹配连接和数据库名
                           const isDbSelected = selectedDatabase === db && activeConnection === conn.id

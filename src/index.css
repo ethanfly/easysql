@@ -56,34 +56,44 @@ body {
 }
 
 /* ============================================
-   滚动条 - 极简风格
+   滚动条 - 更易点击的风格
    ============================================ */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 12px;
+  height: 12px;
 }
 
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: #f1f5f9;
+  border-radius: 6px;
 }
 
 ::-webkit-scrollbar-thumb {
   background: #cbd5e1;
-  border-radius: 3px;
+  border-radius: 6px;
+  border: 2px solid #f1f5f9;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
 
-::-webkit-scrollbar-corner {
-  background: transparent;
+::-webkit-scrollbar-thumb:active {
+  background: #64748b;
 }
 
-/* 更细的滚动条 */
+::-webkit-scrollbar-corner {
+  background: #f1f5f9;
+}
+
+/* 细滚动条（用于侧边栏等） */
 .scrollbar-thin::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+  width: 8px;
+  height: 8px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  border-width: 1px;
 }
 
 /* ============================================
