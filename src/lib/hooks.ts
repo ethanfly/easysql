@@ -328,7 +328,9 @@ export function useTableOperations(showNotification: (type: 'success' | 'error' 
   const fetchTables = useCallback(async (connectionId: string, database: string) => {
     try {
       const tables = await api.getTables(connectionId, database)
-      setTablesMap(prev => new Map(prev).set(database, tables))
+      // 使用 connectionId_database 作为 key，避免不同连接同名数据库冲突
+      const key = `${connectionId}_${database}`
+      setTablesMap(prev => new Map(prev).set(key, tables))
     } catch (err) {
       showNotification('error', '获取表列表失败')
     }

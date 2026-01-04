@@ -109,6 +109,36 @@ function App() {
         next.delete(id)
         return next
       })
+      // 清理该连接的表缓存（key 格式：connectionId_database）
+      setTablesMap(prev => {
+        const next = new Map(prev)
+        for (const key of prev.keys()) {
+          if (key.startsWith(`${id}_`)) {
+            next.delete(key)
+          }
+        }
+        return next
+      })
+      // 清理该连接的列缓存（key 格式：connectionId_database_table）
+      setColumnsMap(prev => {
+        const next = new Map(prev)
+        for (const key of prev.keys()) {
+          if (key.startsWith(`${id}_`)) {
+            next.delete(key)
+          }
+        }
+        return next
+      })
+      // 清理该连接的加载状态
+      setLoadingDbSet(prev => {
+        const next = new Set(prev)
+        for (const key of prev) {
+          if (key.startsWith(`${id}_`)) {
+            next.delete(key)
+          }
+        }
+        return next
+      })
       // 关闭该连接的所有标签页
       setTabs(prev => {
         const remainingTabs = prev.filter(tab => {
@@ -124,26 +154,32 @@ function App() {
         }
         return remainingTabs
       })
-      if (activeConnection === id) setActiveConnection(null)
+      // 如果断开的是当前选中数据库的连接，清空选中状态
+      if (activeConnection === id) {
+        setActiveConnection(null)
+        setSelectedDatabase(null)
+      }
       showNotification('info', '连接已断开')
     } catch (err) {
       showNotification('error', '断开失败：' + (err as Error).message)
     }
-  }, [activeConnection, activeTab, setConnectedIds, setDatabasesMap, setTabs, setActiveTab, showNotification])
+  }, [activeConnection, activeTab, setConnectedIds, setDatabasesMap, setTablesMap, setColumnsMap, setLoadingDbSet, setTabs, setActiveTab, showNotification])
 
   // 选择数据库
   const handleSelectDatabase = useCallback(async (db: string, connectionId: string) => {
     setSelectedDatabase(db)
     setActiveConnection(connectionId)
-    setLoadingDbSet(prev => new Set(prev).add(db))
+    // 使用 connectionId_db 作为 key，避免不同连接同名数据库冲突
+    const dbKey = `${connectionId}_${db}`
+    setLoadingDbSet(prev => new Set(prev).add(dbKey))
     try {
       await fetchTables(connectionId, db)
-      const tables = tablesMap.get(db) || []
+      const tables = tablesMap.get(dbKey) || []
       await Promise.all(tables.map(t => fetchColumns(connectionId, db, t.name)))
     } finally {
       setLoadingDbSet(prev => {
         const next = new Set(prev)
-        next.delete(db)
+        next.delete(dbKey)
         return next
       })
     }
@@ -630,7 +666,7 @@ function App() {
           connectedIds={connectedIds}
           databasesMap={databasesMap}
           databases={databasesMap.get(activeConnection || '') || []}
-          tables={tablesMap.get(selectedDatabase || '') || []}
+          tables={tablesMap.get(activeConnection && selectedDatabase ? `${activeConnection}_${selectedDatabase}` : '') || []}
           columns={columnsMap}
           onTabChange={handleTabChange}
           onCloseTab={handleCloseTab}
@@ -749,8 +785,10 @@ function App() {
           } : undefined}
           onGetDatabases={async () => databasesMap.get(tableDesignerContext.connectionId) || []}
           onGetTables={async (db) => {
+            // 使用 connectionId_db 作为 key
+            const dbKey = `${tableDesignerContext.connectionId}_${db}`
             // 如果缓存中有表列表，直接返回
-            const cached = tablesMap.get(db)
+            const cached = tablesMap.get(dbKey)
             if (cached && cached.length > 0) {
               return cached.map(t => t.name)
             }
@@ -758,7 +796,7 @@ function App() {
             try {
               const tables = await api.getTables(tableDesignerContext.connectionId, db)
               // 更新缓存
-              setTablesMap(prev => new Map(prev).set(db, tables))
+              setTablesMap(prev => new Map(prev).set(dbKey, tables))
               return tables.map((t: any) => t.name || t)
             } catch (err) {
               console.error('Failed to load tables:', err)

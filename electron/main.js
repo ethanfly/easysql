@@ -24,10 +24,29 @@ const sshTunnels = new Map()
 const configPath = path.join(app.getPath('userData'), 'connections.json')
 // SQL.js 初始化
 let SQL = null
-// 用于分配本地端口
-let nextLocalPort = 33060
 
 // ============ SSH 隧道管理 ============
+
+/**
+ * 查找可用端口
+ */
+function findAvailablePort(startPort = 49152) {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer()
+    server.unref()
+    server.on('error', () => {
+      // 端口被占用，尝试下一个
+      if (startPort < 65535) {
+        resolve(findAvailablePort(startPort + 1))
+      } else {
+        reject(new Error('没有可用端口'))
+      }
+    })
+    server.listen(startPort, '127.0.0.1', () => {
+      server.close(() => resolve(startPort))
+    })
+  })
+}
 
 /**
  * 创建 SSH 隧道
@@ -35,13 +54,12 @@ let nextLocalPort = 33060
  * @returns {Promise<{ssh, server, localPort, localHost}>}
  */
 async function createSSHTunnel(config) {
+  // 先找一个可用端口
+  const localPort = await findAvailablePort()
+  console.log(`[SSH] 使用本地端口: ${localPort}`)
+  
   return new Promise((resolve, reject) => {
     const ssh = new SSHClient()
-    const localPort = nextLocalPort++
-    
-    // 端口范围重置
-    if (nextLocalPort > 65000) nextLocalPort = 33060
-    
     let server = null
     let connected = false
     

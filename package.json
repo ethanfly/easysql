@@ -1,6 +1,6 @@
 {
   "name": "easysql",
-  "version": "2.0.3",
+  "version": "2.0.12",
   "description": "Modern Database Management Tool",
   "main": "electron/main.js",
   "type": "module",

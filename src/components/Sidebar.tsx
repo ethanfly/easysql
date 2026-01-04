@@ -23,8 +23,9 @@ const TableGroupList = memo(function TableGroupList({
   const regularTables = tables.filter(t => !t.isView)
   const views = tables.filter(t => t.isView)
   
-  const tablesKey = `${db}_tables`
-  const viewsKey = `${db}_views`
+  // 使用 connectionId + db 组合作为 key，避免不同连接同名数据库状态冲突
+  const tablesKey = `${connectionId}_${db}_tables`
+  const viewsKey = `${connectionId}_${db}_views`
   
   const isTablesExpanded = expandedDbs.has(tablesKey)
   const isViewsExpanded = expandedDbs.has(viewsKey)
@@ -225,10 +226,12 @@ export default function Sidebar({
   const prevConnectedIdsRef = useRef<Set<string>>(new Set())
   
   useEffect(() => {
-    if (selectedDatabase) {
-      setExpandedDbs(prev => new Set(prev).add(selectedDatabase))
+    // 自动展开选中的数据库，使用 connectionId_database 作为 key
+    if (selectedDatabase && activeConnection) {
+      const dbKey = `${activeConnection}_${selectedDatabase}`
+      setExpandedDbs(prev => new Set(prev).add(dbKey))
     }
-  }, [selectedDatabase])
+  }, [selectedDatabase, activeConnection])
   
   // 当连接状态变化时，只展开新建立的连接（不影响其他已连接但被折叠的连接）
   useEffect(() => {
@@ -238,6 +241,22 @@ export default function Sidebar({
       if (!prevIds.has(id)) {
         // 只展开新建立的连接
         setExpandedDbs(prev => new Set(prev).add(id))
+      }
+    })
+    // 找出断开的连接，清理相关展开状态
+    prevIds.forEach(id => {
+      if (!connectedIds.has(id)) {
+        // 清理断开连接的展开状态（连接ID及其下所有数据库）
+        setExpandedDbs(prev => {
+          const next = new Set(prev)
+          for (const key of prev) {
+            // 匹配连接ID本身或者 connectionId_xxx 格式的 key
+            if (key === id || key.startsWith(`${id}_`)) {
+              next.delete(key)
+            }
+          }
+          return next
+        })
       }
     })
     // 更新引用
@@ -263,34 +282,38 @@ export default function Sidebar({
     }
   }, [handleSidebarKeyDown])
   
-  const getFilteredTables = (db: string) => {
-    const dbTables = tablesMap.get(db) || []
+  // 使用 connectionId_db 作为 key 获取表列表
+  const getFilteredTables = (connectionId: string, db: string) => {
+    const dbKey = `${connectionId}_${db}`
+    const dbTables = tablesMap.get(dbKey) || []
     if (!searchQuery) return dbTables
     return dbTables.filter(t => t.name.toLowerCase().includes(searchQuery.toLowerCase()))
   }
   
-  const dbHasMatchingTables = (db: string) => {
+  const dbHasMatchingTables = (connectionId: string, db: string) => {
     if (!searchQuery) return false
-    const dbTables = tablesMap.get(db) || []
+    const dbKey = `${connectionId}_${db}`
+    const dbTables = tablesMap.get(dbKey) || []
     return dbTables.some(t => t.name.toLowerCase().includes(searchQuery.toLowerCase()))
   }
   
-  const getFilteredDatabases = (connDatabases: string[]) => {
+  const getFilteredDatabases = (connectionId: string, connDatabases: string[]) => {
     return connDatabases.filter(db => {
       if (!searchQuery) return true
       const query = searchQuery.toLowerCase()
       if (db.toLowerCase().includes(query)) return true
-      if (dbHasMatchingTables(db)) return true
+      if (dbHasMatchingTables(connectionId, db)) return true
       return false
     })
   }
   
   useEffect(() => {
     if (searchQuery) {
-      databasesMap.forEach((dbs) => {
+      databasesMap.forEach((dbs, connectionId) => {
         dbs.forEach(db => {
-          if (dbHasMatchingTables(db)) {
-            setExpandedDbs(prev => new Set(prev).add(db))
+          if (dbHasMatchingTables(connectionId, db)) {
+            const dbKey = `${connectionId}_${db}`
+            setExpandedDbs(prev => new Set(prev).add(dbKey))
           }
         })
       })
@@ -454,9 +477,10 @@ export default function Sidebar({
                 const showDatabases = isExpanded && isConnected && connDatabases.length > 0
 
                 return (
-                  <div key={conn.id}>
+                  <div key={conn.id} className="relative">
                     <div
                       className={`group flex items-center gap-2 px-2.5 py-2 cursor-pointer transition-all rounded-lg
+                        ${isExpanded && isConnected ? 'sticky top-0 z-20 !bg-[#f8fafc]' : ''}
                         ${isSelected ? 'bg-primary-50 ring-1 ring-primary-200' : ''}
                         ${isActive && !isSelected ? 'bg-light-hover' : 'hover:bg-light-hover'}`}
                       onClick={() => {
@@ -525,24 +549,33 @@ export default function Sidebar({
                           <div className="px-2.5 py-2 text-sm text-text-muted">
                             无数据库或无权限
                           </div>
-                        ) : getFilteredDatabases(connDatabases).map(db => {
-                          const isDbSelected = selectedDatabase === db
-                          const isDbExpanded = expandedDbs.has(db)
-                          const dbTables = getFilteredTables(db)
-                          const isLoading = loadingDbSet.has(db)
+                        ) : getFilteredDatabases(conn.id, connDatabases).map(db => {
+                          // 选中状态需要同时匹配连接和数据库名
+                          const isDbSelected = selectedDatabase === db && activeConnection === conn.id
+                          // 使用 connectionId + db 组合作为 key，避免不同连接同名数据库状态冲突
+                          const dbKey = `${conn.id}_${db}`
+                          const isDbExpanded = expandedDbs.has(dbKey)
+                          const dbTables = getFilteredTables(conn.id, db)
+                          const isLoading = loadingDbSet.has(dbKey)
                           
                           return (
-                            <div key={db}>
+                            <div key={db} className="relative">
                               <div
                                 className={`flex items-center gap-2 px-2.5 py-1.5 cursor-pointer text-sm transition-all rounded-lg mx-1
+                                  ${isDbExpanded ? 'sticky top-[40px] z-10 !bg-[#f8fafc] -mx-1 px-3.5' : ''}
                                   ${isDbSelected ? 'bg-primary-50 text-primary-700' : 'text-text-secondary hover:bg-light-hover'}`}
                                 onClick={() => {
-                                  const willExpand = !expandedDbs.has(db)
-                                  if (willExpand) onSelectDatabase(db, conn.id)
+                                  const willExpand = !expandedDbs.has(dbKey)
+                                  // 获取原始缓存数据（不经过搜索过滤）
+                                  const cachedTables = tablesMap.get(dbKey)
+                                  // 只在展开且缓存为空时才加载数据
+                                  if (willExpand && (!cachedTables || cachedTables.length === 0)) {
+                                    onSelectDatabase(db, conn.id)
+                                  }
                                   setExpandedDbs(prev => {
                                     const next = new Set(prev)
-                                    if (next.has(db)) next.delete(db)
-                                    else next.add(db)
+                                    if (next.has(dbKey)) next.delete(dbKey)
+                                    else next.add(dbKey)
                                     return next
                                   })
                                 }}
