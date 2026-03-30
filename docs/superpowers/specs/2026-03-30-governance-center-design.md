@@ -92,17 +92,7 @@ Matching is case-insensitive. If no rule matches a column name, the value is ret
 
 All classified operations must be written to a local audit log.
 
-Audit records must include:
-
-- Timestamp
-- Connection id and connection name
-- Database type
-- Operation source: `sql-editor`, `table-editor`, `schema-designer`, or other IPC source
-- Classification
-- Risk level
-- SQL text or synthetic operation summary
-- Success or failure
-- Error message if present
+Audit records must follow a fixed schema rather than an ad hoc object shape.
 
 Flashback support in v1 is advisory, not automatic. The system stores enough context to help the user restore data manually.
 
@@ -168,11 +158,14 @@ Responsibilities:
 1. Renderer calls `db:query`.
 2. Main process loads governance config.
 3. SQL is classified and risk-scored.
-4. If governance says the operation requires a prompt or block, return a structured response instead of executing.
-5. Execute the query.
-6. Write audit entry with success or failure.
-7. If result is a read result, apply masking before returning to renderer.
-8. If result is a supported write operation, capture flashback metadata when possible.
+4. Governance computes a decision from classification, risk, and policy.
+5. If the decision is `block`, return a structured response instead of executing.
+6. If the decision is `confirm`, the renderer must collect explicit user confirmation and retry with an approval token.
+7. If the decision is `allow`, continue directly.
+8. Execute the query.
+9. Write audit entry with success or failure.
+10. If result is a read result, apply masking before returning to renderer.
+11. If result is a supported write operation, capture flashback metadata when possible.
 
 ### Table Data Path
 
@@ -186,15 +179,17 @@ Responsibilities:
 1. Renderer calls `db:updateRow`, `db:deleteRow`, or `db:insertRow`.
 2. Main process captures the target row before mutation when needed.
 3. The operation is mapped to `DML`.
-4. Audit entry is written.
-5. Flashback recovery SQL is generated for supported cases.
+4. Governance computes a decision from operation kind and risk.
+5. Audit entry is written.
+6. Flashback recovery SQL is generated for supported cases.
 
 ### Schema Operation Path
 
 1. Renderer calls handlers such as `db:dropTable` or `db:truncateTable`.
 2. The operation is mapped to `DDL`.
 3. Risk is marked high for destructive actions.
-4. Audit entry is written.
+4. Governance computes a decision from operation kind and risk.
+5. Audit entry is written.
 
 ## Storage Design
 
@@ -213,10 +208,18 @@ Example shape:
 ```json
 {
   "enabled": true,
-  "blockHighRisk": false,
+  "defaultUnknownDecision": "confirm",
+  "highRiskMode": "confirm",
   "maskingEnabled": true,
   "auditEnabled": true,
   "maxAuditEntries": 5000,
+  "decisionPolicy": {
+    "DQL": "allow",
+    "DML": "allow",
+    "DDL": "confirm",
+    "TCL": "allow",
+    "UNKNOWN": "confirm"
+  },
   "maskRules": [
     {
       "id": "rule-phone",
@@ -228,6 +231,90 @@ Example shape:
   ]
 }
 ```
+
+Additional config constraints:
+
+- `defaultUnknownDecision` must default to `confirm`
+- `highRiskMode` may be `allow`, `confirm`, or `block`
+- `decisionPolicy` maps classifier output to a default governance decision
+- `UNKNOWN` must never default to `allow` in v1
+
+### Audit Record Schema
+
+Every audit entry must use a stable schema so the UI and future migrations can rely on fixed fields.
+
+```json
+{
+  "id": "audit_01HXYZ...",
+  "timestamp": "2026-03-30T10:15:30.123Z",
+  "connectionId": "conn_123",
+  "connectionName": "Production MySQL",
+  "databaseType": "mysql",
+  "databaseName": "app_db",
+  "source": "sql-editor",
+  "operationKind": "raw-sql",
+  "classification": "DML",
+  "riskLevel": "medium",
+  "decision": "allow",
+  "approvedByUser": false,
+  "sqlText": "UPDATE users SET phone = '13800000000' WHERE id = 1",
+  "statementCount": 1,
+  "isMultiStatement": false,
+  "target": {
+    "schema": "app_db",
+    "table": "users",
+    "primaryKey": "id"
+  },
+  "maskingApplied": false,
+  "flashback": {
+    "eligible": true,
+    "available": true,
+    "flashbackId": "flashback_01HXYZ..."
+  },
+  "result": {
+    "success": true,
+    "affectedRows": 1,
+    "errorCode": null,
+    "errorMessage": null,
+    "durationMs": 42
+  },
+  "metadata": {
+    "highRiskReasons": [],
+    "classifierNotes": [],
+    "clientVersion": "2.0.15"
+  }
+}
+```
+
+Required fields:
+
+- `id`
+- `timestamp`
+- `connectionId`
+- `connectionName`
+- `databaseType`
+- `source`
+- `operationKind`
+- `classification`
+- `riskLevel`
+- `decision`
+- `approvedByUser`
+- `statementCount`
+- `isMultiStatement`
+- `result.success`
+
+Optional but strongly recommended fields:
+
+- `databaseName`
+- `sqlText`
+- `target`
+- `maskingApplied`
+- `flashback`
+- `result.affectedRows`
+- `result.errorCode`
+- `result.errorMessage`
+- `result.durationMs`
+- `metadata`
 
 ### audit-log.jsonl
 
@@ -313,7 +400,46 @@ saveGovernanceConfig(config)
 listAuditLogs(filters?)
 listFlashbackLogs(filters?)
 getFlashbackRecord(id)
+approveGovernanceDecision(requestId)
 ```
+
+### Governance Decision Model
+
+Every intercepted operation must resolve to one of three decisions:
+
+- `allow`: execute immediately
+- `confirm`: require explicit user confirmation before execution
+- `block`: do not execute
+
+Decision inputs:
+
+- Governance enabled flag
+- Operation source
+- Classification
+- Risk level
+- Statement count
+- Whether the SQL was parsed confidently
+- Whether the action is inherently destructive
+
+Decision rules in v1:
+
+1. If governance is disabled, return `allow`.
+2. If classification is `UNKNOWN`, use `defaultUnknownDecision`.
+3. If the operation is high risk, use `highRiskMode`.
+4. Otherwise, use `decisionPolicy[classification]`.
+
+Decision overrides:
+
+- Multi-statement raw SQL must never return `allow` automatically in v1.
+- `UNKNOWN` plus multi-statement must resolve to `block` or `confirm`, never `allow`.
+- Destructive `DDL` such as `DROP` and `TRUNCATE` should default to at least `confirm`.
+
+Approval flow:
+
+- A `confirm` result returns a structured payload with a short-lived `requestId`.
+- The renderer shows the risk explanation and asks for confirmation.
+- On confirmation, the renderer retries through an approval API that consumes the `requestId`.
+- Approval must be single-use and short-lived to prevent accidental replay.
 
 ## Enforcement Rules
 
@@ -328,6 +454,16 @@ Examples:
 - `CREATE`, `ALTER`, `DROP`, `TRUNCATE`, `RENAME` => `DDL`
 - `BEGIN`, `START TRANSACTION`, `COMMIT`, `ROLLBACK`, `SAVEPOINT` => `TCL`
 
+Boundary rules:
+
+- Leading comments and whitespace must be ignored before classification.
+- `WITH ... SELECT ...` must classify as `DQL`.
+- `WITH ... UPDATE/DELETE/INSERT ...` must classify by the first executable statement after the CTE.
+- Empty SQL after trimming comments must classify as `UNKNOWN`.
+- Parse failure must classify as `UNKNOWN`.
+- Multi-statement input such as `SELECT 1; DELETE FROM users` must set `isMultiStatement = true` and classify as `UNKNOWN` in v1 unless every statement classifies to the same safe category and the implementation explicitly supports that path.
+- If the classifier cannot prove a safe read-only interpretation, it must not downgrade to `DQL`.
+
 ### High-Risk Heuristics
 
 Mark these as high risk in v1:
@@ -338,6 +474,15 @@ Mark these as high risk in v1:
 - `DELETE` without `WHERE`
 - `UPDATE` without `WHERE`
 - Any destructive schema operation initiated from table tools
+- Any multi-statement raw SQL
+- Any `UNKNOWN` raw SQL that reaches decision evaluation
+
+Boundary behavior:
+
+- `UNKNOWN` must default to `riskLevel = high` unless a narrower classification can be proven safely.
+- Multi-statement raw SQL must default to `riskLevel = high`.
+- `WITH` clauses do not reduce risk by themselves; only the resolved executable statement matters.
+- Safety defaults must favor `confirm` or `block`, not permissive execution.
 
 Mark these as medium risk:
 
@@ -383,16 +528,34 @@ Before performing a delete:
 
 ### Raw SQL Update and Delete
 
-Only support recovery SQL generation when:
+Raw SQL flashback support must be intentionally narrow in v1.
+
+Only support recovery SQL generation when all of these are true:
 
 - The statement targets one table
-- The table name can be identified
-- A simple before-image query can be performed safely
+- The statement count is exactly one
+- The statement classification is exactly `UPDATE` or `DELETE` within `DML`
+- The table name can be identified with high confidence
+- The target database and primary key can be identified with high confidence
+- The statement includes a simple `WHERE` predicate that the flashback builder explicitly supports
+- A before-image query can be generated without interpreting joins, subqueries, CTE recursion, unions, functions with side effects, or vendor-specific advanced syntax
+- The before-image query returns a bounded result set under a conservative row cap
+
+Unsupported examples in v1:
+
+- Multi-statement SQL
+- `UPDATE ... JOIN ...`
+- `DELETE ... USING ...`
+- CTE-based writes
+- Statements without `WHERE`
+- Statements whose target table or key cannot be resolved reliably
+- Statements expected to affect more than the configured flashback row cap
 
 If not safely supported:
 
 - Still create an audit entry
 - Mark flashback as unavailable
+- Store a reason code explaining why flashback was skipped
 
 ## Error Handling
 
@@ -401,6 +564,8 @@ If not safely supported:
 - If audit writing fails, the query may still proceed, but the failure must be logged clearly.
 - If masking fails, return the unmasked result only if masking is disabled by failure policy. For this release, prefer fail-open with an audit note rather than breaking every query.
 - If flashback capture fails, continue execution but record flashback-unavailable in audit metadata.
+- If classifier confidence is insufficient, the system must treat the statement as `UNKNOWN`.
+- If governance decision evaluation fails, default to `confirm` for raw SQL and log the failure.
 
 ## Testing Strategy
 
@@ -415,12 +580,18 @@ Minimum test groups:
 - `CREATE`, `ALTER`, `DROP`, `TRUNCATE` classified as `DDL`
 - `BEGIN`, `COMMIT`, `ROLLBACK` classified as `TCL`
 - Empty or unsupported SQL classified as `UNKNOWN`
+- Leading comments do not change classification
+- `WITH cte AS (...) SELECT ...` classified as `DQL`
+- `WITH cte AS (...) UPDATE ...` classified as `DML`
+- Mixed multi-statement input classified as `UNKNOWN`
 
 ### Risk Tests
 
 - `DELETE FROM users` is high risk
 - `UPDATE users SET name = 'x'` without `WHERE` is high risk
 - `DROP TABLE users` is high risk
+- Multi-statement raw SQL is high risk
+- `UNKNOWN` raw SQL defaults to high risk
 
 ### Masking Tests
 
@@ -440,6 +611,8 @@ Minimum test groups:
 - Delete row produces an insert recovery SQL
 - Update row produces an update recovery SQL
 - Unsupported raw SQL marks flashback unavailable
+- Multi-statement raw SQL never produces flashback recovery SQL
+- CTE-based writes do not produce flashback recovery SQL in v1
 
 ## File Impact
 
@@ -471,6 +644,8 @@ Expected files to change during implementation:
 - First release is main-process enforced, not frontend-only.
 - First working features are classification, masking, and audit/flashback assistance.
 - Flashback means recovery guidance, not automatic rollback execution.
+- `UNKNOWN` and multi-statement raw SQL use conservative defaults.
+- Raw SQL flashback is limited to tightly-bounded single-statement cases only.
 
 ## Approval State
 
