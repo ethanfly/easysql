@@ -76,6 +76,10 @@ function classifySingleStatement(statement) {
 function classifyKeyword(keyword) {
   switch (keyword) {
     case 'SELECT':
+    case 'SHOW':
+    case 'DESCRIBE':
+    case 'DESC':
+    case 'EXPLAIN':
       return 'DQL'
     case 'INSERT':
     case 'UPDATE':
@@ -179,7 +183,8 @@ function getLeadingKeyword(sql) {
   const trimmed = sql.trimStart()
   if (trimmed.length === 0) return ''
 
-  if (startsWithKeywordToken(trimmed, 'START TRANSACTION')) {
+  const startTransactionKeyword = readStartTransactionKeyword(trimmed)
+  if (startTransactionKeyword) {
     return 'START TRANSACTION'
   }
 
@@ -189,6 +194,18 @@ function getLeadingKeyword(sql) {
   }
 
   return match[0].toUpperCase()
+}
+
+function readStartTransactionKeyword(sql) {
+  if (!startsWithKeywordToken(sql, 'START')) {
+    return false
+  }
+
+  const trimmed = sql.trimStart()
+  let index = 5
+  index = skipTrivia(trimmed, index)
+
+  return startsWithKeywordToken(trimmed.slice(index), 'TRANSACTION')
 }
 
 function scanSql(sql) {
@@ -235,6 +252,15 @@ function scanSql(sql) {
       continue
     }
 
+    if (char === '$') {
+      const dollarQuoted = readDollarQuoted(sql, index)
+      if (dollarQuoted.ok) {
+        current += dollarQuoted.text
+        index = dollarQuoted.nextIndex
+        continue
+      }
+    }
+
     if (char === ';') {
       statements.push(current)
       current = ''
@@ -279,6 +305,13 @@ function validateParentheses(sql) {
       index = quoted.nextIndex
       continue
     }
+    if (char === '$') {
+      const dollarQuoted = readDollarQuoted(sql, index)
+      if (dollarQuoted.ok) {
+        index = dollarQuoted.nextIndex
+        continue
+      }
+    }
     if (char === '(') depth += 1
     if (char === ')') depth -= 1
     if (depth < 0) return { ok: false }
@@ -310,6 +343,26 @@ function readQuoted(sql, startIndex, quote) {
   }
 
   return { ok: false, text: '', nextIndex: -1 }
+}
+
+function readDollarQuoted(sql, startIndex) {
+  const openMatch = /^\$[A-Za-z0-9_]*\$/.exec(sql.slice(startIndex))
+  if (!openMatch) {
+    return { ok: false, text: '', nextIndex: -1 }
+  }
+
+  const delimiter = openMatch[0]
+  const contentStart = startIndex + delimiter.length
+  const closeIndex = sql.indexOf(delimiter, contentStart)
+  if (closeIndex === -1) {
+    return { ok: false, text: '', nextIndex: -1 }
+  }
+
+  return {
+    ok: true,
+    text: sql.slice(startIndex, closeIndex + delimiter.length),
+    nextIndex: closeIndex + delimiter.length,
+  }
 }
 
 function skipLineComment(sql, startIndex) {
@@ -353,6 +406,13 @@ function skipBalancedParens(sql, startIndex) {
       if (!quoted.ok) return -1
       index = quoted.nextIndex
       continue
+    }
+    if (char === '$') {
+      const dollarQuoted = readDollarQuoted(sql, index)
+      if (dollarQuoted.ok) {
+        index = dollarQuoted.nextIndex
+        continue
+      }
     }
     if (char === '(') depth += 1
     if (char === ')') {

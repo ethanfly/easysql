@@ -42,6 +42,20 @@ test('classifies CREATE as DDL with CREATE statementType', () => {
   assert.equal(result.statementType, 'CREATE')
 })
 
+test('classifies PostgreSQL CREATE FUNCTION with dollar-quoted body as DDL', () => {
+  const result = classifySql(`
+    CREATE FUNCTION demo() RETURNS void AS $$
+    BEGIN
+      PERFORM 1;
+    END;
+    $$ LANGUAGE plpgsql
+  `)
+
+  assert.equal(result.classification, 'DDL')
+  assert.equal(result.statementType, 'CREATE')
+  assert.equal(result.isMultiStatement, false)
+})
+
 test('classifies ALTER as DDL with ALTER statementType', () => {
   const result = classifySql('ALTER TABLE users ADD COLUMN active INT')
 
@@ -82,6 +96,20 @@ test('classifies ROLLBACK as TCL with ROLLBACK statementType', () => {
 
   assert.equal(result.classification, 'TCL')
   assert.equal(result.statementType, 'ROLLBACK')
+})
+
+test('classifies START TRANSACTION across newlines as TCL', () => {
+  const result = classifySql('START\nTRANSACTION')
+
+  assert.equal(result.classification, 'TCL')
+  assert.equal(result.statementType, 'START_TRANSACTION')
+})
+
+test('classifies START TRANSACTION across comments as TCL', () => {
+  const result = classifySql('START /* governance */ TRANSACTION')
+
+  assert.equal(result.classification, 'TCL')
+  assert.equal(result.statementType, 'START_TRANSACTION')
 })
 
 test('preserves a token boundary when a block comment appears inside a SELECT', () => {
@@ -199,25 +227,32 @@ test('does not treat START TRANSACTIONAL as START TRANSACTION', () => {
   assert.equal(result.statementType, 'UNKNOWN_STATEMENT')
 })
 
-test('treats SHOW as UNKNOWN without proven read-only safety', () => {
+test('classifies SHOW as DQL with SHOW statementType', () => {
   const result = classifySql('SHOW TABLES')
 
-  assert.equal(result.classification, 'UNKNOWN')
-  assert.equal(result.statementType, 'UNKNOWN_STATEMENT')
+  assert.equal(result.classification, 'DQL')
+  assert.equal(result.statementType, 'SHOW')
 })
 
-test('treats DESCRIBE as UNKNOWN without proven read-only safety', () => {
+test('classifies DESCRIBE as DQL with DESCRIBE statementType', () => {
   const result = classifySql('DESCRIBE users')
 
-  assert.equal(result.classification, 'UNKNOWN')
-  assert.equal(result.statementType, 'UNKNOWN_STATEMENT')
+  assert.equal(result.classification, 'DQL')
+  assert.equal(result.statementType, 'DESCRIBE')
 })
 
-test('treats EXPLAIN as UNKNOWN without proven read-only safety', () => {
+test('classifies DESC as DQL with DESCRIBE statementType', () => {
+  const result = classifySql('DESC users')
+
+  assert.equal(result.classification, 'DQL')
+  assert.equal(result.statementType, 'DESCRIBE')
+})
+
+test('classifies EXPLAIN as DQL with EXPLAIN statementType', () => {
   const result = classifySql('EXPLAIN SELECT * FROM users')
 
-  assert.equal(result.classification, 'UNKNOWN')
-  assert.equal(result.statementType, 'UNKNOWN_STATEMENT')
+  assert.equal(result.classification, 'DQL')
+  assert.equal(result.statementType, 'EXPLAIN')
 })
 
 test('supports quoted CTE names conservatively', () => {
