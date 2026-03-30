@@ -163,7 +163,8 @@ Responsibilities:
 6. If the decision is `confirm`, the renderer must collect explicit user confirmation and retry with an approval token.
 7. If the decision is `allow`, continue directly.
 8. Execute the query.
-9. Write audit entry with success or failure.
+9. Construct the final audit record from the pre-execution context and the post-execution result.
+10. Append the audit entry only after the final decision and execution result are known.
 10. If result is a read result, apply masking before returning to renderer.
 11. If result is a supported write operation, capture flashback metadata when possible.
 
@@ -180,7 +181,8 @@ Responsibilities:
 2. Main process captures the target row before mutation when needed.
 3. The operation is mapped to `DML`.
 4. Governance computes a decision from operation kind and risk.
-5. Audit entry is written.
+5. The final audit record is assembled after the decision and execution result are known.
+6. Audit entry is appended once the record is complete.
 6. Flashback recovery SQL is generated for supported cases.
 
 ### Schema Operation Path
@@ -189,7 +191,8 @@ Responsibilities:
 2. The operation is mapped to `DDL`.
 3. Risk is marked high for destructive actions.
 4. Governance computes a decision from operation kind and risk.
-5. Audit entry is written.
+5. The final audit record is assembled after the decision and execution result are known.
+6. Audit entry is appended once the record is complete.
 
 ## Storage Design
 
@@ -254,6 +257,7 @@ Every audit entry must use a stable schema so the UI and future migrations can r
   "source": "sql-editor",
   "operationKind": "raw-sql",
   "classification": "DML",
+  "statementType": "UPDATE",
   "riskLevel": "medium",
   "decision": "allow",
   "approvedByUser": false,
@@ -296,6 +300,7 @@ Required fields:
 - `source`
 - `operationKind`
 - `classification`
+- `statementType`
 - `riskLevel`
 - `decision`
 - `approvedByUser`
@@ -428,6 +433,10 @@ Decision rules in v1:
 3. If the operation is high risk, use `highRiskMode`.
 4. Otherwise, use `decisionPolicy[classification]`.
 
+Priority rule:
+
+- `highRiskMode` overrides `decisionPolicy[classification]` for any operation evaluated as high risk.
+
 Decision overrides:
 
 - Multi-statement raw SQL must never return `allow` automatically in v1.
@@ -440,12 +449,21 @@ Approval flow:
 - The renderer shows the risk explanation and asks for confirmation.
 - On confirmation, the renderer retries through an approval API that consumes the `requestId`.
 - Approval must be single-use and short-lived to prevent accidental replay.
+- Approval tokens must be bound to the original operation fingerprint, including connection, source, and SQL text hash or synthetic operation hash.
+- A token issued for one operation must not be reusable for another operation, even within the same connection.
 
 ## Enforcement Rules
 
 ### Classification Rules
 
 Start with a lightweight SQL classifier rather than a full SQL parser. For v1, use normalized leading-keyword inspection plus targeted heuristics.
+
+The classifier output must distinguish between:
+
+- `classification`: one of `DQL`, `DML`, `DDL`, `TCL`, `UNKNOWN`
+- `statementType`: a more precise executable type such as `SELECT`, `UPDATE`, `DELETE`, `INSERT`, `DROP_TABLE`, `TRUNCATE_TABLE`, `COMMIT`
+
+`statementType` refines audit detail and flashback eligibility but does not replace the top-level classification categories.
 
 Examples:
 
@@ -461,6 +479,8 @@ Boundary rules:
 - `WITH ... UPDATE/DELETE/INSERT ...` must classify by the first executable statement after the CTE.
 - Empty SQL after trimming comments must classify as `UNKNOWN`.
 - Parse failure must classify as `UNKNOWN`.
+- If `classification` is known but a more precise executable kind can be derived safely, emit `statementType`.
+- If a precise executable kind cannot be derived safely, emit `statementType = UNKNOWN_STATEMENT`.
 - Multi-statement input such as `SELECT 1; DELETE FROM users` must set `isMultiStatement = true` and classify as `UNKNOWN` in v1 unless every statement classifies to the same safe category and the implementation explicitly supports that path.
 - If the classifier cannot prove a safe read-only interpretation, it must not downgrade to `DQL`.
 
@@ -605,6 +625,8 @@ Minimum test groups:
 - Query execution writes a success audit record
 - Failed execution writes a failed audit record
 - Row update and delete from UI are logged with correct category
+- Stored audit records include both `classification` and `statementType`
+- Stored audit records are appended only after the final decision and result are known
 
 ### Flashback Tests
 
