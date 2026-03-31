@@ -7,10 +7,11 @@ import CreateDatabaseModal from './components/CreateDatabaseModal'
 import CreateTableModal from './components/CreateTableModal'
 import TableDesigner from './components/TableDesigner'
 import InputDialog from './components/InputDialog'
-import { Connection, QueryTab, DatabaseType, TableInfo, ColumnInfo, TableTab } from './types'
+import GovernanceCenter from './components/GovernanceCenter'
+import { Connection, QueryTab, DatabaseType, GovernanceApprovalRequest, TableInfo, ColumnInfo, TableTab } from './types'
 import api from './lib/electron-api'
 import { useConnections, useDatabaseOperations, useTableOperations, useTabOperations, useQueryOperations, useImportExport } from './lib/hooks'
-import { Database, Loader2, CheckCircle, XCircle, AlertCircle } from 'lucide-react'
+import { Database, Loader2, CheckCircle, XCircle, AlertCircle, Shield } from 'lucide-react'
 
 function App() {
   const [activeConnection, setActiveConnection] = useState<string | null>(null)
@@ -35,6 +36,7 @@ function App() {
     type: 'success' | 'error' | 'info'
     message: string
   } | null>(null)
+  const [showGovernanceCenter, setShowGovernanceCenter] = useState(false)
 
   // 显示通知
   const showNotification = useCallback((type: 'success' | 'error' | 'info', message: string) => {
@@ -442,7 +444,55 @@ function App() {
       showNotification('error', '请先连接数据库')
       return
     }
-    await runQuery(tabId, activeConnection, sql)
+    let approval: GovernanceApprovalRequest | undefined
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await runQuery(tabId, activeConnection, sql, approval)
+      if (!result) {
+        return
+      }
+
+      const governance = result.governance
+      if (governance?.decision !== 'confirm' || !governance.approvalRequest?.requestId || !governance.approvalRequest?.token) {
+        if (governance?.decision === 'block') {
+          showNotification('error', result.error || '治理策略阻止了本次执行')
+        } else if (result.error) {
+          showNotification('error', result.error)
+        }
+        return
+      }
+
+      const confirmed = window.confirm(
+        [
+          '本次操作需要治理审批。',
+          `分类: ${governance.classification}`,
+          `语句类型: ${governance.statementType}`,
+          `风险级别: ${governance.riskLevel}`,
+          governance.highRiskReasons?.length ? `原因: ${governance.highRiskReasons.join(', ')}` : '',
+          '',
+          '确认继续执行吗？',
+        ].filter(Boolean).join('\n')
+      )
+
+      if (!confirmed) {
+        showNotification('info', '已取消需要审批的执行请求')
+        return
+      }
+
+      const approvalResult = await api.approveGovernanceDecision(governance.approvalRequest)
+      if (!approvalResult.success || !approvalResult.approved) {
+        showNotification('error', approvalResult.message || '治理审批失败')
+        return
+      }
+
+      approval = {
+        requestId: approvalResult.requestId,
+        token: approvalResult.token,
+        connectionId: approvalResult.connectionId,
+        source: approvalResult.source,
+        operationHash: approvalResult.operationHash,
+      }
+    }
   }, [activeConnection, runQuery, showNotification])
 
   // 更新SQL
@@ -702,6 +752,13 @@ function App() {
       <div className="h-6 bg-light-surface flex items-center px-3 text-xs border-t border-border-default text-text-tertiary">
         <span className={`w-2 h-2 rounded-full mr-2 ${connectedIds.size > 0 ? 'bg-success-500' : 'bg-text-disabled'}`} />
         <span>{connectedIds.size > 0 ? `${connectedIds.size} 个连接` : '未连接'}</span>
+        <button
+          onClick={() => setShowGovernanceCenter(true)}
+          className="ml-4 inline-flex items-center gap-1 rounded-md border border-border-default bg-white px-2 py-0.5 text-[11px] text-text-secondary transition hover:bg-light-hover"
+        >
+          <Shield size={12} />
+          治理中心
+        </button>
         <span className="ml-auto font-mono text-text-muted">EasySQL v{__APP_VERSION__}</span>
       </div>
 
@@ -717,6 +774,12 @@ function App() {
           <span className="text-sm">{notification.message}</span>
         </div>
       )}
+
+      <GovernanceCenter
+        isOpen={showGovernanceCenter}
+        onClose={() => setShowGovernanceCenter(false)}
+        onNotify={showNotification}
+      />
 
       {/* 模态框 */}
       <ConnectionModal

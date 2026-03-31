@@ -35,6 +35,9 @@ export interface QueryTab {
     | {
         columns: string[]
         rows: any[]
+        error?: string
+        affectedRows?: number
+        governance?: GovernanceExecutionInfo
       }
     | null
 }

@@ -1,5 +1,5 @@
-import { X, Play, Plus, Minus, Table2, ChevronLeft, ChevronRight, FolderOpen, Save, AlignLeft, Download, FileSpreadsheet, FileCode, Database, Loader2, Check, RefreshCw, Zap, Server, ChevronDown } from 'lucide-react'
-import { QueryTab, DB_INFO, DatabaseType, TableInfo, ColumnInfo, TableTab, Connection } from '../types'
+import { X, Play, Plus, Minus, Table2, ChevronLeft, ChevronRight, FolderOpen, Save, AlignLeft, Download, FileSpreadsheet, FileCode, Database, Loader2, Check, RefreshCw, Zap, Server, ChevronDown, Shield, AlertTriangle } from 'lucide-react'
+import { QueryTab, DB_INFO, DatabaseType, TableInfo, ColumnInfo, TableTab, Connection, GovernanceExecutionInfo } from '../types'
 import { useState, useEffect, useCallback, memo, Suspense, lazy } from 'react'
 import { format } from 'sql-formatter'
 import api from '../lib/electron-api'
@@ -15,6 +15,79 @@ const EditorLoading = memo(() => (
     </div>
   </div>
 ))
+
+const GovernanceBanner = memo(function GovernanceBanner({ governance, error }: { governance?: GovernanceExecutionInfo; error?: string }) {
+  if (!governance && !error) {
+    return null
+  }
+
+  const decisionTone =
+    governance?.decision === 'block'
+      ? 'bg-red-50 text-red-700 border-red-200'
+      : governance?.decision === 'confirm'
+        ? 'bg-amber-50 text-amber-700 border-amber-200'
+        : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+
+  const riskTone =
+    governance?.riskLevel === 'high'
+      ? 'bg-red-50 text-red-700'
+      : governance?.riskLevel === 'medium'
+        ? 'bg-amber-50 text-amber-700'
+        : 'bg-slate-100 text-slate-700'
+
+  return (
+    <div className="border-b border-border-default bg-slate-50 px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700">
+          <Shield size={12} />
+          {governance?.classification || 'UNKNOWN'}
+        </span>
+        {governance?.statementType && (
+          <span className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-slate-600 border border-slate-200">
+            {governance.statementType}
+          </span>
+        )}
+        {governance?.riskLevel && (
+          <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${riskTone}`}>
+            risk {governance.riskLevel}
+          </span>
+        )}
+        {governance?.decision && (
+          <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${decisionTone}`}>
+            {governance.decision}
+          </span>
+        )}
+        {governance?.maskingApplied && (
+          <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
+            masked
+          </span>
+        )}
+        {governance?.isMultiStatement && (
+          <span className="rounded-full bg-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700">
+            multi statement
+          </span>
+        )}
+      </div>
+
+      {(error || governance?.highRiskReasons?.length || governance?.decisionNotes?.length) && (
+        <div className="mt-2 space-y-1">
+          {error && (
+            <div className="flex items-start gap-2 text-sm text-red-600">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+          {governance?.highRiskReasons?.length ? (
+            <div className="text-xs text-slate-600">风险原因: {governance.highRiskReasons.join(', ')}</div>
+          ) : null}
+          {governance?.decisionNotes?.length ? (
+            <div className="text-xs text-slate-500">决策说明: {governance.decisionNotes.join(', ')}</div>
+          ) : null}
+        </div>
+      )}
+    </div>
+  )
+})
 
 type Tab = QueryTab | TableTab
 
@@ -892,6 +965,8 @@ const QueryEditor = memo(function QueryEditor({
     const colInfo = findColumnInfo(col)
     return { name: col, type: colInfo?.type, key: colInfo?.key, comment: colInfo?.comment }
   }) || []
+  const hasTabularResults = Boolean(tab.results && tab.results.columns.length > 0)
+  const governanceInfo = tab.results?.governance
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
@@ -998,7 +1073,7 @@ const QueryEditor = memo(function QueryEditor({
           </button>
           <div className="w-px h-5 bg-border-default mx-1" />
           <div className="relative">
-            <button onClick={() => setShowExportMenu(!showExportMenu)} disabled={!tab.results || tab.results.rows.length === 0}
+            <button onClick={() => setShowExportMenu(!showExportMenu)} disabled={!hasTabularResults || tab.results.rows.length === 0}
               className="h-8 px-3 bg-white hover:bg-light-hover border border-border-default flex items-center gap-1.5 text-sm text-text-primary rounded-lg transition-colors disabled:opacity-40">
               <Download size={14} />
               导出
@@ -1047,9 +1122,12 @@ const QueryEditor = memo(function QueryEditor({
             )}
           </span>
         </div>
+        {(governanceInfo || tab.results?.error) && (
+          <GovernanceBanner governance={governanceInfo} error={tab.results?.error} />
+        )}
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: tab.results ? 32 : 0 }}>
-            {tab.results ? (
+          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: hasTabularResults ? 32 : 0 }}>
+            {hasTabularResults ? (
               <VirtualDataTable 
                 columns={resultColumns} 
                 data={localData} 
@@ -1067,13 +1145,15 @@ const QueryEditor = memo(function QueryEditor({
                   <div className="w-12 h-12 rounded-xl bg-light-elevated flex items-center justify-center">
                     <Database size={24} className="text-text-disabled" />
                   </div>
-                  <span className="text-text-muted">执行查询以查看结果</span>
+                  <span className="text-text-muted">
+                    {tab.results?.error ? '本次执行没有可展示结果' : '执行查询以查看结果'}
+                  </span>
                 </div>
               </div>
             )}
           </div>
           {/* 底部工具栏 */}
-          {tab.results && (
+          {hasTabularResults && (
             <div className="absolute bottom-0 left-0 right-0 h-8 bg-light-surface border-t border-border-default flex items-center px-3 gap-1">
               <div className="flex items-center gap-1">
                 <button 
