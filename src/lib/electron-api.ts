@@ -1,4 +1,14 @@
 // Electron API 类型声明
+import type {
+  GovernanceApprovalRequest,
+  GovernanceApprovalResponse,
+  GovernanceAuditRecord,
+  GovernanceConfig,
+  GovernanceExecutionInfo,
+  GovernanceFlashbackRecord,
+  GovernanceLogFilters,
+} from '../types'
+
 declare global {
   interface Window {
     electronAPI: {
@@ -10,12 +20,18 @@ declare global {
       // 配置存储
       loadConnections: () => Promise<any[]>
       saveConnections: (connections: any[]) => Promise<{ success: boolean; message?: string }>
+      loadGovernanceConfig: () => Promise<GovernanceConfig | null>
+      saveGovernanceConfig: (config: GovernanceConfig) => Promise<{ success: boolean; message?: string }>
+      listAuditLogs: (filters?: GovernanceLogFilters) => Promise<GovernanceAuditRecord[]>
+      listFlashbackLogs: (filters?: GovernanceLogFilters) => Promise<GovernanceFlashbackRecord[]>
+      getFlashbackRecord: (id: string) => Promise<GovernanceFlashbackRecord | null>
+      approveGovernanceDecision: (approval: GovernanceApprovalRequest) => Promise<GovernanceApprovalResponse>
       
       // 数据库操作
       testConnection: (config: any) => Promise<{ success: boolean; message: string }>
       connect: (config: any) => Promise<{ success: boolean; message: string }>
       disconnect: (id: string) => Promise<void>
-      query: (id: string, sql: string) => Promise<{ columns: string[]; rows: any[][]; error?: string; affectedRows?: number }>
+      query: (id: string, sql: string, governanceOptions?: GovernanceApprovalRequest) => Promise<{ columns: string[]; rows: any[][]; error?: string; affectedRows?: number; governance?: GovernanceExecutionInfo }>
       getDatabases: (id: string) => Promise<string[]>
       getTables: (id: string, database: string) => Promise<TableInfo[]>
       getColumns: (id: string, database: string, table: string) => Promise<ColumnInfo[]>
@@ -111,6 +127,7 @@ export interface TableDataResult {
   total: number
   page: number
   pageSize: number
+  governance?: GovernanceExecutionInfo
 }
 
 // 表设计器相关类型
@@ -235,17 +252,19 @@ const api = {
     }
   },
   
-  query: async (id: string, sql: string): Promise<{ columns: string[]; rows: any[]; error?: string }> => {
+  query: async (id: string, sql: string, governanceOptions?: GovernanceApprovalRequest): Promise<{ columns: string[]; rows: any[]; error?: string; affectedRows?: number; governance?: GovernanceExecutionInfo }> => {
     const electronAPI = getElectronAPI()
     if (!electronAPI) {
       return { columns: [], rows: [], error: 'Electron API 不可用' }
     }
     try {
-      const result = await electronAPI.query(id, sql)
+      const result = await electronAPI.query(id, sql, governanceOptions)
       return {
         columns: result.columns,
         rows: result.rows,
         error: result.error,
+        affectedRows: result.affectedRows,
+        governance: result.governance,
       }
     } catch (e: any) {
       return { columns: [], rows: [], error: e.toString() }
@@ -253,17 +272,19 @@ const api = {
   },
 
   // 执行查询（query 的别名，用于兼容）
-  executeQuery: async (id: string, sql: string): Promise<{ columns: string[]; rows: any[]; error?: string }> => {
+  executeQuery: async (id: string, sql: string, governanceOptions?: GovernanceApprovalRequest): Promise<{ columns: string[]; rows: any[]; error?: string; affectedRows?: number; governance?: GovernanceExecutionInfo }> => {
     const electronAPI = getElectronAPI()
     if (!electronAPI) {
       return { columns: [], rows: [], error: 'Electron API 不可用' }
     }
     try {
-      const result = await electronAPI.query(id, sql)
+      const result = await electronAPI.query(id, sql, governanceOptions)
       return {
         columns: result.columns,
         rows: result.rows,
         error: result.error,
+        affectedRows: result.affectedRows,
+        governance: result.governance,
       }
     } catch (e: any) {
       return { columns: [], rows: [], error: e.toString() }
@@ -315,7 +336,7 @@ const api = {
     }
   },
   
-  getTableData: async (id: string, database: string, table: string, page?: number, pageSize?: number): Promise<{ data: any[]; total: number; columns?: ColumnInfo[] }> => {
+  getTableData: async (id: string, database: string, table: string, page?: number, pageSize?: number): Promise<{ data: any[]; total: number; columns?: ColumnInfo[]; governance?: GovernanceExecutionInfo }> => {
     const electronAPI = getElectronAPI()
     if (!electronAPI) return { data: [], total: 0 }
     try {
@@ -337,6 +358,7 @@ const api = {
         data,
         total: result.total,
         columns: result.columns,
+        governance: result.governance,
       }
     } catch (e) {
       console.error('getTableData error:', e)
@@ -593,6 +615,70 @@ const api = {
     } catch (e) {
       console.error('loadConnections error:', e)
       return []
+    }
+  },
+
+  loadGovernanceConfig: async (): Promise<GovernanceConfig | null> => {
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) return null
+    try {
+      return await electronAPI.loadGovernanceConfig()
+    } catch (e) {
+      console.error('loadGovernanceConfig error:', e)
+      return null
+    }
+  },
+
+  saveGovernanceConfig: async (config: GovernanceConfig): Promise<{ success: boolean; message?: string }> => {
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) return { success: false, message: 'Electron API 涓嶅彲鐢?' }
+    try {
+      return await electronAPI.saveGovernanceConfig(config)
+    } catch (e: any) {
+      return { success: false, message: e.toString() }
+    }
+  },
+
+  listAuditLogs: async (filters?: GovernanceLogFilters): Promise<GovernanceAuditRecord[]> => {
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) return []
+    try {
+      return await electronAPI.listAuditLogs(filters)
+    } catch (e) {
+      console.error('listAuditLogs error:', e)
+      return []
+    }
+  },
+
+  listFlashbackLogs: async (filters?: GovernanceLogFilters): Promise<GovernanceFlashbackRecord[]> => {
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) return []
+    try {
+      return await electronAPI.listFlashbackLogs(filters)
+    } catch (e) {
+      console.error('listFlashbackLogs error:', e)
+      return []
+    }
+  },
+
+  getFlashbackRecord: async (id: string): Promise<GovernanceFlashbackRecord | null> => {
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) return null
+    try {
+      return await electronAPI.getFlashbackRecord(id)
+    } catch (e) {
+      console.error('getFlashbackRecord error:', e)
+      return null
+    }
+  },
+
+  approveGovernanceDecision: async (approval: GovernanceApprovalRequest): Promise<GovernanceApprovalResponse> => {
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) return { success: false, approved: false, message: 'Electron API 涓嶅彲鐢?' }
+    try {
+      return await electronAPI.approveGovernanceDecision(approval)
+    } catch (e: any) {
+      return { success: false, approved: false, message: e.toString() }
     }
   },
   
