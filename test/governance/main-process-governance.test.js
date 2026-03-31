@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
+import { access } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -157,4 +158,104 @@ test('table data masking uses configured global rules', async () => {
     assert.equal(result.rows[0][1], 'active')
     assert.equal(result.maskingApplied, true)
   })
+})
+
+test('governance approval can be consumed for the original raw SQL operation', async () => {
+  await withRuntime(async (runtime) => {
+    const started = await runtime.beginRawSqlOperation({
+      connectionId: 'c1',
+      connectionName: 'demo',
+      databaseType: 'mysql',
+      source: 'sql-editor',
+      sqlText: 'SELECT 1; DELETE FROM users',
+    })
+
+    assert.equal(started.allowExecution, false)
+    assert.equal(started.decision.decision, 'confirm')
+
+    const approval = runtime.approveDecision(started.response.governance.approvalRequest)
+    assert.equal(approval.success, true)
+    assert.equal(approval.approved, true)
+
+    const retried = await runtime.beginRawSqlOperation({
+      connectionId: 'c1',
+      connectionName: 'demo',
+      databaseType: 'mysql',
+      source: 'sql-editor',
+      sqlText: 'SELECT 1; DELETE FROM users',
+      approval,
+    })
+
+    assert.equal(retried.allowExecution, true)
+    assert.equal(retried.auditRecord.approvedByUser, true)
+  })
+})
+
+test('flashback records are persisted and queryable by runtime', async () => {
+  await withRuntime(async (runtime) => {
+    const flashback = runtime.buildRowDeleteFlashback({
+      databaseName: 'app_db',
+      tableName: 'users',
+      primaryKey: 'id',
+      beforeImage: { id: 7, email: 'alice@example.com' },
+    })
+
+    const record = await runtime.recordMutationOperation({
+      operationKind: 'row-delete',
+      source: 'table-editor',
+      connectionId: 'c1',
+      connectionName: 'demo',
+      databaseType: 'mysql',
+      databaseName: 'app_db',
+      tableName: 'users',
+      primaryKey: { column: 'id', value: 7 },
+      classification: 'DML',
+      statementType: 'DELETE',
+      riskLevel: 'medium',
+      success: true,
+      affectedRows: 1,
+      flashback,
+    })
+
+    const flashbackLogs = await runtime.listFlashbackRecords()
+    assert.equal(flashbackLogs.length, 1)
+    assert.equal(flashbackLogs[0].flashbackId, record.flashback.flashbackId)
+
+    const persisted = await runtime.getFlashbackRecord(record.flashback.flashbackId)
+    assert.equal(persisted?.flashbackId, record.flashback.flashbackId)
+    assert.match(persisted?.recoverySql || '', /INSERT INTO `users`/)
+  })
+})
+
+test('userDataPath is used as the governance storage base directory', async () => {
+  const baseDir = mkdtempSync(path.join(os.tmpdir(), 'easysql-governance-userdata-'))
+  const runtime = createGovernanceRuntime({
+    userDataPath: baseDir,
+    appVersion: '2.0.15',
+    createId: createIncrementingId(),
+    config: DEFAULT_GOVERNANCE_CONFIG,
+  })
+
+  try {
+    const started = await runtime.beginRawSqlOperation({
+      connectionId: 'c1',
+      connectionName: 'demo',
+      databaseType: 'mysql',
+      source: 'sql-editor',
+      sqlText: 'SELECT 1',
+    })
+
+    await runtime.completeRawSqlOperation({
+      auditRecord: started.auditRecord,
+      durationMs: 5,
+      result: {
+        columns: ['value'],
+        rows: [[1]],
+      },
+    })
+
+    await access(path.join(baseDir, 'audit-log.jsonl'))
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true })
+  }
 })

@@ -3,6 +3,7 @@ import { createAuditStore } from './audit-store.js'
 import { createApprovalStore } from './approval-store.js'
 import { decideGovernance } from './decision-engine.js'
 import { createFlashbackBuilder } from './flashback-builder.js'
+import { createFlashbackStore } from './flashback-store.js'
 import { maskRows } from './masking-engine.js'
 import { analyzeRisk } from './risk-analyzer.js'
 import { classifySql } from './sql-classifier.js'
@@ -24,7 +25,9 @@ export const DEFAULT_GOVERNANCE_CONFIG = {
 }
 
 export function createGovernanceRuntime(options = {}) {
-  const auditStore = options.auditStore ?? createAuditStore({ baseDir: options.baseDir })
+  const storageBaseDir = normalizeText(options.baseDir) || normalizeText(options.userDataPath) || process.cwd()
+  const auditStore = options.auditStore ?? createAuditStore({ baseDir: storageBaseDir })
+  const flashbackStore = options.flashbackStore ?? createFlashbackStore({ baseDir: storageBaseDir })
   const approvalStore = options.approvalStore ?? createApprovalStore(options.approvalOptions)
   const flashbackBuilder = options.flashbackBuilder ?? createFlashbackBuilder(options.flashbackOptions)
   const createId = typeof options.createId === 'function' ? options.createId : defaultCreateId
@@ -40,6 +43,27 @@ export function createGovernanceRuntime(options = {}) {
     setConfig(nextConfig = {}) {
       currentConfig = normalizeConfig(nextConfig)
       return cloneConfig(currentConfig)
+    },
+
+    approveDecision(input = {}) {
+      const normalized = normalizeApprovalInput(input)
+      if (!normalized.requestId || !normalized.token || !normalized.connectionId || !normalized.source || !normalized.operationHash) {
+        return {
+          success: false,
+          approved: false,
+          message: 'approval request is incomplete',
+        }
+      }
+
+      return {
+        success: true,
+        approved: true,
+        requestId: normalized.requestId,
+        token: normalized.token,
+        connectionId: normalized.connectionId,
+        source: normalized.source,
+        operationHash: normalized.operationHash,
+      }
     },
 
     async beginRawSqlOperation(input = {}) {
@@ -329,6 +353,21 @@ export function createGovernanceRuntime(options = {}) {
       })
 
       await appendAuditIfEnabled(auditStore, config, record)
+      if (record.flashback?.flashbackId) {
+        await flashbackStore.append({
+          auditId: record.id,
+          flashbackId: record.flashback.flashbackId,
+          operationKind: record.flashback.operationKind,
+          connectionId: record.connectionId,
+          source: record.source,
+          target: record.flashback.target ?? null,
+          recoverySql: normalizeNullableText(record.flashback.recoverySql),
+          beforeImageQuery: normalizeNullableText(record.flashback.beforeImageQuery),
+          reasonCodes: Array.isArray(record.flashback.reasonCodes) ? [...record.flashback.reasonCodes] : [],
+          available: record.flashback.available === true,
+          eligible: record.flashback.eligible === true,
+        })
+      }
       return record
     },
 
@@ -346,6 +385,18 @@ export function createGovernanceRuntime(options = {}) {
 
     listAuditRecords(input = {}) {
       return auditStore.listRecentRecords(input)
+    },
+
+    appendFlashbackRecord(record = {}) {
+      return flashbackStore.append(record)
+    },
+
+    listFlashbackRecords(input = {}) {
+      return flashbackStore.listRecentRecords(input)
+    },
+
+    getFlashbackRecord(flashbackId) {
+      return flashbackStore.getRecord(flashbackId)
     },
   }
 }
@@ -386,9 +437,44 @@ export async function appendAuditRecord(input = {}) {
 }
 
 export async function appendFlashbackRecord(input = {}) {
+  const runtime = input.runtime ?? createGovernanceRuntime(input)
+  const flashback = input.flashback ?? unavailableFlashbackRecord()
+  if (!flashback.flashbackId) {
+    return {
+      ok: false,
+      error: {
+        code: 'flashback-missing-id',
+        message: 'flashbackId is required',
+      },
+      flashback,
+    }
+  }
+
+  const record = {
+    auditId: normalizeNullableText(input.auditId),
+    flashbackId: flashback.flashbackId,
+    operationKind: normalizeText(flashback.operationKind),
+    connectionId: normalizeText(input.connectionId),
+    source: normalizeText(input.source),
+    target: flashback.target ?? null,
+    recoverySql: normalizeNullableText(flashback.recoverySql),
+    beforeImageQuery: normalizeNullableText(flashback.beforeImageQuery),
+    reasonCodes: Array.isArray(flashback.reasonCodes) ? [...flashback.reasonCodes] : [],
+    available: flashback.available === true,
+    eligible: flashback.eligible === true,
+  }
+
+  if (typeof runtime.appendFlashbackRecord === 'function') {
+    return runtime.appendFlashbackRecord(record)
+  }
+
   return {
-    ok: true,
-    flashback: input.flashback ?? unavailableFlashbackRecord(),
+    ok: false,
+    error: {
+      code: 'flashback-store-unavailable',
+      message: 'flashback store is unavailable',
+    },
+    flashback,
   }
 }
 
@@ -634,9 +720,14 @@ function normalizeApprovalInput(input = {}) {
     return {}
   }
 
+  const fingerprint = input.fingerprint && typeof input.fingerprint === 'object' ? input.fingerprint : {}
+
   return {
     requestId: normalizeText(input.requestId),
     token: normalizeText(input.token),
+    connectionId: normalizeText(input.connectionId ?? fingerprint.connectionId),
+    source: normalizeText(input.source ?? fingerprint.source),
+    operationHash: normalizeText(input.operationHash ?? fingerprint.operationHash),
   }
 }
 
