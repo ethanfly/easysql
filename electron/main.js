@@ -676,16 +676,6 @@ async function recordGovernedMutation(input) {
     decisionNotes: input.decisionNotes,
   })
 
-  if (input.flashback?.flashbackId) {
-    await appendGovernanceFlashback({
-      runtime,
-      auditId: record.id,
-      connectionId: input.connectionId,
-      source: input.source,
-      flashback: input.flashback,
-    })
-  }
-
   return record
 }
 
@@ -1161,6 +1151,25 @@ ipcMain.handle('db:insertRow', async (event, id, database, table, columns, value
 ipcMain.handle('db:createDatabase', async (event, id, dbName, charset = 'utf8mb4', collation = 'utf8mb4_general_ci') => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+  const enforcement = await enforceStructuredGovernance({
+    runtime,
+    startedAt,
+    operationKind: 'create-database',
+    source: 'schema-browser',
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName: dbName,
+    classification: 'DDL',
+    statementType: 'CREATE_DATABASE',
+    flashbackReasonCodes: ['schema-operation-not-supported'],
+  })
+  if (enforcement.blocked) {
+    return enforcement.response
+  }
 
   try {
     switch (connInfo.type) {
@@ -1183,8 +1192,43 @@ ipcMain.handle('db:createDatabase', async (event, id, dbName, charset = 'utf8mb4
       default:
         return { success: false, message: '璇ユ暟鎹簱绫诲瀷涓嶆敮鎸佹鎿嶄綔' }
     }
-    return { success: true, message: '数据库创建成功' }
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'create-database',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: dbName,
+      classification: 'DDL',
+      statementType: 'CREATE_DATABASE',
+      riskLevel: enforcement.riskLevel,
+      success: true,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.evaluation.decision?.decision,
+      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
+    return { success: true, message: '数据库创建成功', governance: enforcement.governance }
   } catch (e) {
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'create-database',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: dbName,
+      classification: 'DDL',
+      statementType: 'CREATE_DATABASE',
+      riskLevel: enforcement.riskLevel,
+      success: false,
+      error: e,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.evaluation.decision?.decision,
+      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
     return { success: false, message: e.message }
   }
 })
@@ -2198,9 +2242,29 @@ ipcMain.handle('db:getColumnNames', async (event, id, database, tableName) => {
 })
 
 // 鎵ц澶氭潯 SQL锛堢敤浜庤〃璁捐鍣ㄤ繚瀛橈級
-ipcMain.handle('db:executeMultiSQL', async (event, id, sqls) => {
+ipcMain.handle('db:executeMultiSQL', async (event, id, sqls, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+  const databaseName = getConnectionDatabaseName(connInfo)
+  const governance = await runtime.beginRawSqlOperation({
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName,
+    source: 'schema-browser',
+    sqlText: sqls,
+    approval: governanceOptions,
+  })
+  if (!governance.allowExecution) {
+    return {
+      success: false,
+      message: governance.response?.error || 'Governance blocked operation',
+      governance: governance.response?.governance,
+    }
+  }
 
   try {
     // 灏?SQL 璇彞鎸夊垎鍙峰垎鍓插苟閫愭潯鎵ц
@@ -2209,10 +2273,25 @@ ipcMain.handle('db:executeMultiSQL', async (event, id, sqls) => {
     for (const sql of statements) {
       await executeQuery(connInfo.connection, connInfo.type, sql)
     }
-    
-    return { success: true, message: '鎵ц鎴愬姛' }
+
+    const completed = await runtime.completeRawSqlOperation({
+      auditRecord: governance.auditRecord,
+      result: {
+        columns: [],
+        rows: [],
+        affectedRows: statements.length,
+      },
+      durationMs: Date.now() - startedAt,
+    })
+
+    return { success: true, message: '鎵ц鎴愬姛', governance: completed.result.governance }
   } catch (e) {
-    return { success: false, message: e.message }
+    const failed = await runtime.failRawSqlOperation({
+      auditRecord: governance.auditRecord,
+      error: e,
+      durationMs: Date.now() - startedAt,
+    })
+    return { success: false, message: e.message, governance: failed.result.governance }
   }
 })
 

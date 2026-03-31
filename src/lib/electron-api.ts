@@ -61,7 +61,7 @@ declare global {
       getIndexes: (id: string, database: string, tableName: string) => Promise<IndexInfo[]>
       getForeignKeys: (id: string, database: string, tableName: string) => Promise<ForeignKeyInfo[]>
       getColumnNames: (id: string, database: string, tableName: string) => Promise<string[]>
-      executeMultiSQL: (id: string, sqls: string) => Promise<{ success: boolean; message: string }>
+      executeMultiSQL: (id: string, sqls: string, governanceOptions?: GovernanceApprovalRequest) => Promise<{ success: boolean; message: string; governance?: GovernanceExecutionInfo }>
       
       // 文件操作
       openFile: () => Promise<{ path: string; content: string; name: string } | null>
@@ -585,11 +585,11 @@ const api = {
     }
   },
 
-  executeMultiSQL: async (id: string, sqls: string): Promise<{ success: boolean; message: string }> => {
+  executeMultiSQL: async (id: string, sqls: string, governanceOptions?: GovernanceApprovalRequest): Promise<{ success: boolean; message: string; governance?: GovernanceExecutionInfo }> => {
     const electronAPI = getElectronAPI()
     if (!electronAPI) return { success: false, message: 'Electron API 不可用' }
     try {
-      return await electronAPI.executeMultiSQL(id, sqls)
+      return await electronAPI.executeMultiSQL(id, sqls, governanceOptions)
     } catch (e: any) {
       return { success: false, message: e.toString() }
     }

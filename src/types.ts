@@ -265,7 +265,7 @@ declare global {
       getIndexes: (id: string, database: string, tableName: string) => Promise<IndexInfo[]>
       getForeignKeys: (id: string, database: string, tableName: string) => Promise<ForeignKeyInfo[]>
       getColumnNames: (id: string, database: string, tableName: string) => Promise<string[]>
-      executeMultiSQL: (id: string, sqls: string) => Promise<{ success: boolean; message: string }>
+      executeMultiSQL: (id: string, sqls: string, governanceOptions?: GovernanceApprovalRequest) => Promise<{ success: boolean; message: string; governance?: GovernanceExecutionInfo }>
       openFile: () => Promise<{ path: string; content: string; name: string } | null>
       saveFile: (filePath: string | null, content: string) => Promise<{ path: string; name: string } | null>
       selectFile: (extensions?: string[]) => Promise<string | null>

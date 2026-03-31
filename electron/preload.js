@@ -81,7 +81,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getIndexes: (id, database, tableName) => ipcRenderer.invoke('db:getIndexes', id, database, tableName),
   getForeignKeys: (id, database, tableName) => ipcRenderer.invoke('db:getForeignKeys', id, database, tableName),
   getColumnNames: (id, database, tableName) => ipcRenderer.invoke('db:getColumnNames', id, database, tableName),
-  executeMultiSQL: (id, sqls) => ipcRenderer.invoke('db:executeMultiSQL', id, sqls),
+  executeMultiSQL: (id, sqls, governanceOptions) => ipcRenderer.invoke('db:executeMultiSQL', id, sqls, governanceOptions),
 
   // File operations
   openFile: () => ipcRenderer.invoke('file:open'),
