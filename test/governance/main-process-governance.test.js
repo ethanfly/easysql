@@ -191,6 +191,32 @@ test('governance approval can be consumed for the original raw SQL operation', a
   })
 })
 
+test('structured approval resolution is pending first and approved on matching retry', async () => {
+  await withRuntime(async (runtime) => {
+    const pending = runtime.resolveApproval({
+      connectionId: 'c1',
+      source: 'schema-browser',
+      operationHash: 'hash-1',
+    })
+
+    assert.equal(pending.ok, true)
+    assert.equal(pending.state, 'pending')
+    assert.equal(Boolean(pending.approval?.requestId), true)
+    assert.equal(Boolean(pending.approval?.token), true)
+
+    const approved = runtime.resolveApproval({
+      connectionId: 'c1',
+      source: 'schema-browser',
+      operationHash: 'hash-1',
+      approval: pending.approval,
+    })
+
+    assert.equal(approved.ok, true)
+    assert.equal(approved.state, 'approved')
+    assert.equal(approved.approvedByUser, true)
+  })
+})
+
 test('flashback records are persisted and queryable by runtime', async () => {
   await withRuntime(async (runtime) => {
     const flashback = runtime.buildRowDeleteFlashback({

@@ -37,6 +37,23 @@ export function classifySql(sql) {
   return classifySingleStatement(statements[0])
 }
 
+export function splitSqlStatements(sql) {
+  if (typeof sql !== 'string') {
+    return {
+      ok: false,
+      parseFailure: true,
+      statements: [],
+    }
+  }
+
+  const scan = scanSql(sql)
+  return {
+    ok: !scan.parseFailure,
+    parseFailure: scan.parseFailure,
+    statements: scan.statements.filter((statement) => statement.trim().length > 0),
+  }
+}
+
 function classifySingleStatement(statement) {
   const trimmed = statement.trimStart()
   if (trimmed.length === 0) {

@@ -66,6 +66,62 @@ export function createGovernanceRuntime(options = {}) {
       }
     },
 
+    resolveApproval(input = {}) {
+      const normalized = normalizeApprovalInput(input.approval)
+      const connectionId = normalizeText(input.connectionId)
+      const source = normalizeText(input.source)
+      const operationHash = normalizeText(input.operationHash)
+
+      if (normalized.requestId) {
+        const consumed = approvalStore.consumeApproval({
+          requestId: normalized.requestId,
+          token: normalized.token,
+          connectionId,
+          source,
+          operationHash,
+        })
+
+        if (consumed.ok) {
+          return {
+            ok: true,
+            state: 'approved',
+            approvedByUser: true,
+            approval: {
+              requestId: consumed.consumed.requestId,
+              token: normalized.token,
+              connectionId,
+              source,
+              operationHash,
+            },
+          }
+        }
+      }
+
+      const issued = approvalStore.issueApproval({
+        connectionId,
+        source,
+        operationHash,
+      })
+
+      if (!issued.ok) {
+        return {
+          ok: false,
+          state: 'error',
+          error: issued.error ?? {
+            code: 'approval-store-error',
+            message: 'approval issuance failed',
+          },
+        }
+      }
+
+      return {
+        ok: true,
+        state: 'pending',
+        approvedByUser: false,
+        approval: issued.request,
+      }
+    },
+
     async beginRawSqlOperation(input = {}) {
       const operationHash = hashOperation({
         source: input.source,

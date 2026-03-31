@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { classifySql } from '../../electron/governance/sql-classifier.js'
+import { classifySql, splitSqlStatements } from '../../electron/governance/sql-classifier.js'
 
 test('classifies a plain SELECT as DQL with SELECT statementType', () => {
   const result = classifySql('SELECT * FROM users')
@@ -193,6 +193,19 @@ test('returns UNKNOWN and marks multi-statement input conservatively', () => {
   assert.equal(result.classification, 'UNKNOWN')
   assert.equal(result.statementType, 'UNKNOWN_STATEMENT')
   assert.equal(result.isMultiStatement, true)
+})
+
+test('splitSqlStatements keeps semicolons inside strings and comments out of statement boundaries', () => {
+  const result = splitSqlStatements(`
+    INSERT INTO notes(body) VALUES ('hello;world');
+    /* ignore ; inside comment */
+    UPDATE notes SET body = 'done' WHERE id = 1;
+  `)
+
+  assert.equal(result.ok, true)
+  assert.equal(result.statements.length, 2)
+  assert.match(result.statements[0], /'hello;world'/)
+  assert.match(result.statements[1].trimStart(), /^UPDATE notes SET body = 'done'/)
 })
 
 test('returns UNKNOWN for malformed SQL parse failure', () => {

@@ -1,5 +1,5 @@
 import { X, Play, Plus, Minus, Table2, ChevronLeft, ChevronRight, FolderOpen, Save, AlignLeft, Download, FileSpreadsheet, FileCode, Database, Loader2, Check, RefreshCw, Zap, Server, ChevronDown, Shield, AlertTriangle } from 'lucide-react'
-import { QueryTab, DB_INFO, DatabaseType, TableInfo, ColumnInfo, TableTab, Connection, GovernanceExecutionInfo } from '../types'
+import { QueryTab, DB_INFO, DatabaseType, TableInfo, ColumnInfo, TableTab, Connection, GovernanceExecutionInfo, GovernanceApprovalRequest, GovernedMutationResult } from '../types'
 import { useState, useEffect, useCallback, memo, Suspense, lazy } from 'react'
 import { format } from 'sql-formatter'
 import api from '../lib/electron-api'
@@ -120,6 +120,7 @@ interface Props {
   onAddTableRow?: (tabId: string) => void
   onUpdateNewRow?: (tabId: string, rowIndex: number, colName: string, value: any) => void
   onDeleteNewRow?: (tabId: string, rowIndex: number) => void
+  onExecuteGovernedMutation?: (action: (approval?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>) => Promise<GovernedMutationResult>
   onSelectConnection?: (connectionId: string) => void
   onSelectDatabase?: (database: string, connectionId: string) => void
   onFetchTableColumns?: (tableName: string) => Promise<void>
@@ -155,6 +156,7 @@ const MainContent = memo(function MainContent({
   onAddTableRow,
   onUpdateNewRow,
   onDeleteNewRow,
+  onExecuteGovernedMutation,
   onSelectConnection,
   onSelectDatabase,
   onFetchTableColumns,
@@ -675,6 +677,15 @@ const QueryEditor = memo(function QueryEditor({
   }, [])
   
   // 保存修改到数据库（包括更新和删除）
+  const runGovernedMutation = useCallback(async (
+    action: (approval?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>,
+  ) => {
+    if (onExecuteGovernedMutation) {
+      return onExecuteGovernedMutation(action)
+    }
+    return action()
+  }, [onExecuteGovernedMutation])
+
   const handleSaveChanges = useCallback(async () => {
     if (!connectionId || (modifiedCells.size === 0 && deletedRows.size === 0)) return
     
@@ -724,18 +735,19 @@ const QueryEditor = memo(function QueryEditor({
             continue
           }
           
-          const result = await api.deleteRow(
+          const result = await runGovernedMutation((approval) => api.deleteRow(
             connectionId,
             database,
             tableName,
-            { column: primaryKeyCol, value: primaryKeyValue }
-          )
+            { column: primaryKeyCol, value: primaryKeyValue },
+            approval,
+          ))
           
           if (result.success) {
             deleteSuccessCount++
           } else {
             deleteErrorCount++
-            console.error('删除失败:', result.error)
+            console.error('删除失败:', result.message)
           }
         }
       }
@@ -775,19 +787,20 @@ const QueryEditor = memo(function QueryEditor({
             continue
           }
           
-          const result = await api.updateRow(
+          const result = await runGovernedMutation((approval) => api.updateRow(
             connectionId,
             database,
             tableName,
             { column: primaryKeyCol, value: primaryKeyValue },
-            updates
-          )
+            updates,
+            approval,
+          ))
           
           if (result.success) {
             updateSuccessCount++
           } else {
             updateErrorCount++
-            console.error('更新失败:', result.error)
+            console.error('更新失败:', result.message)
           }
         }
       }
@@ -813,7 +826,7 @@ const QueryEditor = memo(function QueryEditor({
     } finally {
       setIsSaving(false)
     }
-  }, [connectionId, selectedDatabase, sql, modifiedCells, deletedRows, localData, originalData, columns, tab.results, parseTableNameFromSql, parseDatabaseFromSql])
+  }, [connectionId, selectedDatabase, sql, modifiedCells, deletedRows, localData, originalData, columns, tab.results, parseTableNameFromSql, parseDatabaseFromSql, runGovernedMutation])
 
   const handleRun = useCallback(() => {
     onRun(sql)

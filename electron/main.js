@@ -23,6 +23,7 @@ import {
   evaluateRawSqlOperation,
   evaluateStructuredOperation,
 } from './governance/index.js'
+import { splitSqlStatements } from './governance/sql-classifier.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -555,10 +556,13 @@ function buildStructuredGovernancePayload(evaluation, extra = {}) {
   return {
     classification: extra.classification ?? null,
     statementType: extra.statementType ?? null,
+    isMultiStatement: false,
+    classifierNotes: extra.classifierNotes ?? [],
     riskLevel: evaluation?.riskLevel ?? null,
     decision: evaluation?.decision?.decision ?? null,
     highRiskReasons: extra.highRiskReasons ?? [],
     decisionNotes: evaluation?.decision?.notes ?? [],
+    approvalRequest: extra.approvalRequest ?? null,
   }
 }
 
@@ -593,7 +597,7 @@ async function enforceStructuredGovernance(input) {
     tableName: input.tableName,
     riskLevel,
   })
-  const governance = buildStructuredGovernancePayload(evaluation, {
+  const baseGovernance = buildStructuredGovernancePayload(evaluation, {
     classification: input.classification,
     statementType: input.statementType,
     highRiskReasons: Array.isArray(input.highRiskReasons)
@@ -606,8 +610,95 @@ async function enforceStructuredGovernance(input) {
       blocked: false,
       runtime,
       evaluation,
-      governance,
+      governance: baseGovernance,
       riskLevel,
+      approvedByUser: false,
+      decision: 'allow',
+      decisionNotes: evaluation.decision?.notes ?? [],
+    }
+  }
+
+  if (evaluation.decision?.decision === 'confirm') {
+    const approval = runtime.resolveApproval({
+      approval: input.approval,
+      connectionId: input.connectionId,
+      source: input.source,
+      operationHash: evaluation.operationHash,
+    })
+
+    if (approval.ok && approval.state === 'approved') {
+      const decisionNotes = [...(evaluation.decision?.notes ?? []), 'approval-consumed']
+      return {
+        blocked: false,
+        runtime,
+        evaluation,
+        governance: {
+          ...baseGovernance,
+          decision: 'allow',
+          decisionNotes,
+          approvalRequest: null,
+        },
+        riskLevel,
+        approvedByUser: true,
+        decision: 'allow',
+        decisionNotes,
+      }
+    }
+
+    if (approval.ok && approval.state === 'pending') {
+      return {
+        blocked: true,
+        runtime,
+        evaluation,
+        governance: {
+          ...baseGovernance,
+          approvalRequest: approval.approval,
+        },
+        riskLevel,
+        response: buildMutationGovernanceError('Governance confirmation required', {
+          ...baseGovernance,
+          approvalRequest: approval.approval,
+        }),
+      }
+    }
+
+    await recordGovernedMutation({
+      runtime,
+      operationKind: input.operationKind,
+      source: input.source,
+      connectionId: input.connectionId,
+      connectionName: input.connectionName,
+      databaseType: input.databaseType,
+      databaseName: input.databaseName,
+      tableName: input.tableName,
+      primaryKey: input.primaryKey,
+      classification: input.classification,
+      statementType: input.statementType,
+      riskLevel,
+      success: false,
+      error: new Error('Governance approval could not be issued'),
+      durationMs: Date.now() - input.startedAt,
+      decision: 'block',
+      highRiskReasons: baseGovernance.highRiskReasons,
+      decisionNotes: [...(evaluation.decision?.notes ?? []), 'approval-store-error'],
+      flashbackReasonCodes: input.flashbackReasonCodes,
+    })
+
+    return {
+      blocked: true,
+      runtime,
+      evaluation,
+      governance: {
+        ...baseGovernance,
+        decision: 'block',
+        decisionNotes: [...(evaluation.decision?.notes ?? []), 'approval-store-error'],
+      },
+      riskLevel,
+      response: buildMutationGovernanceError('Governance approval could not be issued', {
+        ...baseGovernance,
+        decision: 'block',
+        decisionNotes: [...(evaluation.decision?.notes ?? []), 'approval-store-error'],
+      }),
     }
   }
 
@@ -628,7 +719,7 @@ async function enforceStructuredGovernance(input) {
     error: new Error('Governance blocked operation'),
     durationMs: Date.now() - input.startedAt,
     decision: evaluation.decision?.decision,
-    highRiskReasons: governance.highRiskReasons,
+    highRiskReasons: baseGovernance.highRiskReasons,
     decisionNotes: evaluation.decision?.notes ?? [],
     flashbackReasonCodes: input.flashbackReasonCodes,
   })
@@ -637,9 +728,9 @@ async function enforceStructuredGovernance(input) {
     blocked: true,
     runtime,
     evaluation,
-    governance,
+    governance: baseGovernance,
     riskLevel,
-    response: buildMutationGovernanceError('Governance blocked operation', governance),
+    response: buildMutationGovernanceError('Governance blocked operation', baseGovernance),
   }
 }
 
@@ -910,7 +1001,7 @@ ipcMain.handle('db:getTableData', async (event, id, database, table, page, pageS
   }
 })
 
-ipcMain.handle('db:updateRow', async (event, id, database, table, primaryKey, updates) => {
+ipcMain.handle('db:updateRow', async (event, id, database, table, primaryKey, updates, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { success: false, message: '连接不存在或已断开，请重新连接' }
   const runtime = ensureGovernanceRuntime()
@@ -929,6 +1020,7 @@ ipcMain.handle('db:updateRow', async (event, id, database, table, primaryKey, up
     primaryKey,
     classification: 'DML',
     statementType: 'ROW_UPDATE',
+    approval: governanceOptions,
     flashbackReasonCodes: ['flashback-not-supported'],
   })
   if (enforcement.blocked) {
@@ -962,8 +1054,9 @@ ipcMain.handle('db:updateRow', async (event, id, database, table, primaryKey, up
       affectedRows: 1,
       durationMs: Date.now() - startedAt,
       flashback,
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
     })
     return { success: true, message: '更新成功', governance: auditRecord ? { ...enforcement.governance, flashback: auditRecord.flashback } : enforcement.governance }
   } catch (error) {
@@ -984,14 +1077,15 @@ ipcMain.handle('db:updateRow', async (event, id, database, table, primaryKey, up
       error,
       durationMs: Date.now() - startedAt,
       flashback,
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
     })
     return { success: false, message: error.message }
   }
 })
 
-ipcMain.handle('db:deleteRow', async (event, id, database, table, primaryKey) => {
+ipcMain.handle('db:deleteRow', async (event, id, database, table, primaryKey, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { success: false, message: '连接不存在或已断开，请重新连接' }
   const runtime = ensureGovernanceRuntime()
@@ -1010,6 +1104,7 @@ ipcMain.handle('db:deleteRow', async (event, id, database, table, primaryKey) =>
     primaryKey,
     classification: 'DML',
     statementType: 'ROW_DELETE',
+    approval: governanceOptions,
     highRiskReasons: ['row-delete'],
     flashbackReasonCodes: ['flashback-not-supported'],
   })
@@ -1044,8 +1139,9 @@ ipcMain.handle('db:deleteRow', async (event, id, database, table, primaryKey) =>
       affectedRows: 1,
       durationMs: Date.now() - startedAt,
       flashback,
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
     })
     return { success: true, message: '删除成功', governance: auditRecord ? { ...enforcement.governance, flashback: auditRecord.flashback } : enforcement.governance }
   } catch (error) {
@@ -1066,14 +1162,15 @@ ipcMain.handle('db:deleteRow', async (event, id, database, table, primaryKey) =>
       error,
       durationMs: Date.now() - startedAt,
       flashback,
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
     })
     return { success: false, message: error.message }
   }
 })
 
-ipcMain.handle('db:insertRow', async (event, id, database, table, columns, values) => {
+ipcMain.handle('db:insertRow', async (event, id, database, table, columns, values, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€锛岃閲嶆柊杩炴帴' }
   const runtime = ensureGovernanceRuntime()
@@ -1091,6 +1188,7 @@ ipcMain.handle('db:insertRow', async (event, id, database, table, columns, value
     tableName: table,
     classification: 'DML',
     statementType: 'ROW_INSERT',
+    approval: governanceOptions,
     flashbackReasonCodes: ['insert-flashback-not-supported'],
   })
   if (enforcement.blocked) {
@@ -1116,8 +1214,9 @@ ipcMain.handle('db:insertRow', async (event, id, database, table, columns, value
       durationMs: Date.now() - startedAt,
       flashbackReasonCodes: ['insert-flashback-not-supported'],
       classifierNotes: ['table-insert'],
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
     })
     return { success: true, message: '插入成功', insertId: result?.insertId, governance: enforcement.governance }
   } catch (error) {
@@ -1138,8 +1237,9 @@ ipcMain.handle('db:insertRow', async (event, id, database, table, columns, value
       durationMs: Date.now() - startedAt,
       flashbackReasonCodes: ['insert-flashback-not-supported'],
       classifierNotes: ['table-insert'],
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
     })
     return { success: false, message: error.message }
   }
@@ -1148,7 +1248,7 @@ ipcMain.handle('db:insertRow', async (event, id, database, table, columns, value
 // ============ 鏁版嵁搴撶鐞嗘搷浣?============
 
 // 鍒涘缓鏁版嵁搴?
-ipcMain.handle('db:createDatabase', async (event, id, dbName, charset = 'utf8mb4', collation = 'utf8mb4_general_ci') => {
+ipcMain.handle('db:createDatabase', async (event, id, dbName, charset = 'utf8mb4', collation = 'utf8mb4_general_ci', governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
   const runtime = ensureGovernanceRuntime()
@@ -1165,6 +1265,7 @@ ipcMain.handle('db:createDatabase', async (event, id, dbName, charset = 'utf8mb4
     databaseName: dbName,
     classification: 'DDL',
     statementType: 'CREATE_DATABASE',
+    approval: governanceOptions,
     flashbackReasonCodes: ['schema-operation-not-supported'],
   })
   if (enforcement.blocked) {
@@ -1205,8 +1306,9 @@ ipcMain.handle('db:createDatabase', async (event, id, dbName, charset = 'utf8mb4
       riskLevel: enforcement.riskLevel,
       success: true,
       durationMs: Date.now() - startedAt,
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: true, message: '数据库创建成功', governance: enforcement.governance }
@@ -1225,8 +1327,9 @@ ipcMain.handle('db:createDatabase', async (event, id, dbName, charset = 'utf8mb4
       success: false,
       error: e,
       durationMs: Date.now() - startedAt,
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: false, message: e.message }
@@ -1234,7 +1337,7 @@ ipcMain.handle('db:createDatabase', async (event, id, dbName, charset = 'utf8mb4
 })
 
 // 鍒犻櫎鏁版嵁搴?
-ipcMain.handle('db:dropDatabase', async (event, id, dbName) => {
+ipcMain.handle('db:dropDatabase', async (event, id, dbName, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
   const runtime = ensureGovernanceRuntime()
@@ -1251,6 +1354,7 @@ ipcMain.handle('db:dropDatabase', async (event, id, dbName) => {
     databaseName: dbName,
     classification: 'DDL',
     statementType: 'DROP_DATABASE',
+    approval: governanceOptions,
     highRiskReasons: ['drop-database'],
     flashbackReasonCodes: ['schema-operation-not-supported'],
   })
@@ -1290,9 +1394,10 @@ ipcMain.handle('db:dropDatabase', async (event, id, dbName) => {
       riskLevel: enforcement.riskLevel,
       success: true,
       durationMs: Date.now() - startedAt,
-      decision: enforcement.evaluation.decision?.decision,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
       highRiskReasons: ['drop-database'],
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: true, message: '数据库删除成功', governance: enforcement.governance }
@@ -1311,9 +1416,10 @@ ipcMain.handle('db:dropDatabase', async (event, id, dbName) => {
       success: false,
       error: e,
       durationMs: Date.now() - startedAt,
-      decision: enforcement.evaluation.decision?.decision,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
       highRiskReasons: ['drop-database'],
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: false, message: e.message }
@@ -1323,7 +1429,7 @@ ipcMain.handle('db:dropDatabase', async (event, id, dbName) => {
 // ============ 琛ㄧ鐞嗘搷浣?============
 
 // 鍒涘缓琛?
-ipcMain.handle('db:createTable', async (event, id, database, tableName, columns) => {
+ipcMain.handle('db:createTable', async (event, id, database, tableName, columns, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
   const runtime = ensureGovernanceRuntime()
@@ -1341,6 +1447,7 @@ ipcMain.handle('db:createTable', async (event, id, database, tableName, columns)
     tableName,
     classification: 'DDL',
     statementType: 'CREATE_TABLE',
+    approval: governanceOptions,
     flashbackReasonCodes: ['schema-operation-not-supported'],
   })
   if (enforcement.blocked) {
@@ -1436,8 +1543,9 @@ ipcMain.handle('db:createTable', async (event, id, database, tableName, columns)
       riskLevel: enforcement.riskLevel,
       success: true,
       durationMs: Date.now() - startedAt,
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: true, message: '表创建成功', governance: enforcement.governance }
@@ -1457,8 +1565,9 @@ ipcMain.handle('db:createTable', async (event, id, database, tableName, columns)
       success: false,
       error: e,
       durationMs: Date.now() - startedAt,
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: false, message: e.message }
@@ -1466,50 +1575,30 @@ ipcMain.handle('db:createTable', async (event, id, database, tableName, columns)
 })
 
 // 鍒犻櫎琛?
-ipcMain.handle('db:dropTable', async (event, id, database, tableName) => {
+ipcMain.handle('db:dropTable', async (event, id, database, tableName, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
   const runtime = ensureGovernanceRuntime()
   const startedAt = Date.now()
   const connectionName = getConnectionDisplayName(id, connInfo)
-  const evaluation = evaluateStructuredOperation({
-    config: runtime.getConfig(),
-    connectionId: id,
-    source: 'schema-browser',
+  const enforcement = await enforceStructuredGovernance({
+    runtime,
+    startedAt,
     operationKind: 'drop-table',
-    classification: 'DDL',
-    statementType: 'DROP_TABLE',
-    riskLevel: 'high',
+    source: 'schema-browser',
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName: database,
     tableName,
-  })
-  const governance = buildStructuredGovernancePayload(evaluation, {
     classification: 'DDL',
     statementType: 'DROP_TABLE',
+    approval: governanceOptions,
     highRiskReasons: ['drop-table'],
+    flashbackReasonCodes: ['schema-operation-not-supported'],
   })
-
-  if (evaluation.decision?.decision !== 'allow') {
-    await recordGovernedMutation({
-      runtime,
-      operationKind: 'drop-table',
-      source: 'schema-browser',
-      connectionId: id,
-      connectionName,
-      databaseType: connInfo.type,
-      databaseName: database,
-      tableName,
-      classification: 'DDL',
-      statementType: 'DROP_TABLE',
-      riskLevel: evaluation.riskLevel,
-      success: false,
-      error: new Error('Governance blocked operation'),
-      durationMs: Date.now() - startedAt,
-      decision: evaluation.decision?.decision,
-      highRiskReasons: ['drop-table'],
-      decisionNotes: evaluation.decision?.notes ?? [],
-      flashbackReasonCodes: ['schema-operation-not-supported'],
-    })
-    return buildMutationGovernanceError('Governance blocked operation', governance)
+  if (enforcement.blocked) {
+    return enforcement.response
   }
 
   try {
@@ -1545,14 +1634,20 @@ ipcMain.handle('db:dropTable', async (event, id, database, tableName) => {
       tableName,
       classification: 'DDL',
       statementType: 'DROP_TABLE',
-      riskLevel: evaluation.riskLevel,
+      riskLevel: enforcement.riskLevel,
       success: true,
       durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
       highRiskReasons: ['drop-table'],
-      decisionNotes: evaluation.decision?.notes ?? [],
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
-    return { success: true, message: '表删除成功', governance: auditRecord ? { flashback: auditRecord.flashback } : null }
+    return {
+      success: true,
+      message: '表删除成功',
+      governance: auditRecord ? { ...enforcement.governance, flashback: auditRecord.flashback } : enforcement.governance,
+    }
   } catch (error) {
     await recordGovernedMutation({
       runtime,
@@ -1565,12 +1660,14 @@ ipcMain.handle('db:dropTable', async (event, id, database, tableName) => {
       tableName,
       classification: 'DDL',
       statementType: 'DROP_TABLE',
-      riskLevel: evaluation.riskLevel,
+      riskLevel: enforcement.riskLevel,
       success: false,
       error,
       durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
       highRiskReasons: ['drop-table'],
-      decisionNotes: evaluation.decision?.notes ?? [],
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: false, message: error.message }
@@ -1578,50 +1675,30 @@ ipcMain.handle('db:dropTable', async (event, id, database, tableName) => {
 })
 
 // 娓呯┖琛?
-ipcMain.handle('db:truncateTable', async (event, id, database, tableName) => {
+ipcMain.handle('db:truncateTable', async (event, id, database, tableName, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
   const runtime = ensureGovernanceRuntime()
   const startedAt = Date.now()
   const connectionName = getConnectionDisplayName(id, connInfo)
-  const evaluation = evaluateStructuredOperation({
-    config: runtime.getConfig(),
-    connectionId: id,
-    source: 'schema-browser',
+  const enforcement = await enforceStructuredGovernance({
+    runtime,
+    startedAt,
     operationKind: 'truncate-table',
-    classification: 'DDL',
-    statementType: 'TRUNCATE_TABLE',
-    riskLevel: 'high',
+    source: 'schema-browser',
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName: database,
     tableName,
-  })
-  const governance = buildStructuredGovernancePayload(evaluation, {
     classification: 'DDL',
     statementType: 'TRUNCATE_TABLE',
+    approval: governanceOptions,
     highRiskReasons: ['truncate-table'],
+    flashbackReasonCodes: ['schema-operation-not-supported'],
   })
-
-  if (evaluation.decision?.decision !== 'allow') {
-    await recordGovernedMutation({
-      runtime,
-      operationKind: 'truncate-table',
-      source: 'schema-browser',
-      connectionId: id,
-      connectionName,
-      databaseType: connInfo.type,
-      databaseName: database,
-      tableName,
-      classification: 'DDL',
-      statementType: 'TRUNCATE_TABLE',
-      riskLevel: evaluation.riskLevel,
-      success: false,
-      error: new Error('Governance blocked operation'),
-      durationMs: Date.now() - startedAt,
-      decision: evaluation.decision?.decision,
-      highRiskReasons: ['truncate-table'],
-      decisionNotes: evaluation.decision?.notes ?? [],
-      flashbackReasonCodes: ['schema-operation-not-supported'],
-    })
-    return buildMutationGovernanceError('Governance blocked operation', governance)
+  if (enforcement.blocked) {
+    return enforcement.response
   }
 
   try {
@@ -1658,14 +1735,20 @@ ipcMain.handle('db:truncateTable', async (event, id, database, tableName) => {
       tableName,
       classification: 'DDL',
       statementType: 'TRUNCATE_TABLE',
-      riskLevel: evaluation.riskLevel,
+      riskLevel: enforcement.riskLevel,
       success: true,
       durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
       highRiskReasons: ['truncate-table'],
-      decisionNotes: evaluation.decision?.notes ?? [],
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
-    return { success: true, message: '表已清空', governance: auditRecord ? { flashback: auditRecord.flashback } : null }
+    return {
+      success: true,
+      message: '表已清空',
+      governance: auditRecord ? { ...enforcement.governance, flashback: auditRecord.flashback } : enforcement.governance,
+    }
   } catch (error) {
     await recordGovernedMutation({
       runtime,
@@ -1678,12 +1761,14 @@ ipcMain.handle('db:truncateTable', async (event, id, database, tableName) => {
       tableName,
       classification: 'DDL',
       statementType: 'TRUNCATE_TABLE',
-      riskLevel: evaluation.riskLevel,
+      riskLevel: enforcement.riskLevel,
       success: false,
       error,
       durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
       highRiskReasons: ['truncate-table'],
-      decisionNotes: evaluation.decision?.notes ?? [],
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: false, message: error.message }
@@ -1691,7 +1776,7 @@ ipcMain.handle('db:truncateTable', async (event, id, database, tableName) => {
 })
 
 // 閲嶅懡鍚嶈〃
-ipcMain.handle('db:renameTable', async (event, id, database, oldName, newName) => {
+ipcMain.handle('db:renameTable', async (event, id, database, oldName, newName, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
   const runtime = ensureGovernanceRuntime()
@@ -1709,6 +1794,7 @@ ipcMain.handle('db:renameTable', async (event, id, database, oldName, newName) =
     tableName: oldName,
     classification: 'DDL',
     statementType: 'RENAME_TABLE',
+    approval: governanceOptions,
     flashbackReasonCodes: ['schema-operation-not-supported'],
   })
   if (enforcement.blocked) {
@@ -1751,8 +1837,9 @@ ipcMain.handle('db:renameTable', async (event, id, database, oldName, newName) =
       riskLevel: enforcement.riskLevel,
       success: true,
       durationMs: Date.now() - startedAt,
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: true, message: '琛ㄩ噸鍛藉悕鎴愬姛', governance: enforcement.governance }
@@ -1772,8 +1859,9 @@ ipcMain.handle('db:renameTable', async (event, id, database, oldName, newName) =
       success: false,
       error: e,
       durationMs: Date.now() - startedAt,
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: false, message: e.message }
@@ -1781,7 +1869,7 @@ ipcMain.handle('db:renameTable', async (event, id, database, oldName, newName) =
 })
 
 // 澶嶅埗琛ㄧ粨鏋?
-ipcMain.handle('db:duplicateTable', async (event, id, database, sourceTable, newTable, withData = false) => {
+ipcMain.handle('db:duplicateTable', async (event, id, database, sourceTable, newTable, withData = false, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
   const runtime = ensureGovernanceRuntime()
@@ -1799,6 +1887,7 @@ ipcMain.handle('db:duplicateTable', async (event, id, database, sourceTable, new
     tableName: sourceTable,
     classification: 'DDL',
     statementType: 'DUPLICATE_TABLE',
+    approval: governanceOptions,
     flashbackReasonCodes: ['schema-operation-not-supported'],
   })
   if (enforcement.blocked) {
@@ -1847,8 +1936,9 @@ ipcMain.handle('db:duplicateTable', async (event, id, database, sourceTable, new
       riskLevel: enforcement.riskLevel,
       success: true,
       durationMs: Date.now() - startedAt,
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: true, message: '表复制成功', governance: enforcement.governance }
@@ -1868,8 +1958,9 @@ ipcMain.handle('db:duplicateTable', async (event, id, database, sourceTable, new
       success: false,
       error: e,
       durationMs: Date.now() - startedAt,
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: false, message: e.message }
@@ -1877,7 +1968,7 @@ ipcMain.handle('db:duplicateTable', async (event, id, database, sourceTable, new
 })
 
 // 娣诲姞鍒?
-ipcMain.handle('db:addColumn', async (event, id, database, tableName, column) => {
+ipcMain.handle('db:addColumn', async (event, id, database, tableName, column, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
   const runtime = ensureGovernanceRuntime()
@@ -1895,6 +1986,7 @@ ipcMain.handle('db:addColumn', async (event, id, database, tableName, column) =>
     tableName,
     classification: 'DDL',
     statementType: 'ADD_COLUMN',
+    approval: governanceOptions,
     flashbackReasonCodes: ['schema-operation-not-supported'],
   })
   if (enforcement.blocked) {
@@ -1961,8 +2053,9 @@ ipcMain.handle('db:addColumn', async (event, id, database, tableName, column) =>
       riskLevel: enforcement.riskLevel,
       success: true,
       durationMs: Date.now() - startedAt,
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: true, message: '列添加成功', governance: enforcement.governance }
@@ -1982,8 +2075,9 @@ ipcMain.handle('db:addColumn', async (event, id, database, tableName, column) =>
       success: false,
       error: e,
       durationMs: Date.now() - startedAt,
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: false, message: e.message }
@@ -1991,7 +2085,7 @@ ipcMain.handle('db:addColumn', async (event, id, database, tableName, column) =>
 })
 
 // 淇敼鍒?
-ipcMain.handle('db:modifyColumn', async (event, id, database, tableName, oldName, column) => {
+ipcMain.handle('db:modifyColumn', async (event, id, database, tableName, oldName, column, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
   const runtime = ensureGovernanceRuntime()
@@ -2009,6 +2103,7 @@ ipcMain.handle('db:modifyColumn', async (event, id, database, tableName, oldName
     tableName,
     classification: 'DDL',
     statementType: 'MODIFY_COLUMN',
+    approval: governanceOptions,
     flashbackReasonCodes: ['schema-operation-not-supported'],
   })
   if (enforcement.blocked) {
@@ -2068,8 +2163,9 @@ ipcMain.handle('db:modifyColumn', async (event, id, database, tableName, oldName
       riskLevel: enforcement.riskLevel,
       success: true,
       durationMs: Date.now() - startedAt,
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: true, message: '列修改成功', governance: enforcement.governance }
@@ -2089,8 +2185,9 @@ ipcMain.handle('db:modifyColumn', async (event, id, database, tableName, oldName
       success: false,
       error: e,
       durationMs: Date.now() - startedAt,
-      decision: enforcement.evaluation.decision?.decision,
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: false, message: e.message }
@@ -2098,7 +2195,7 @@ ipcMain.handle('db:modifyColumn', async (event, id, database, tableName, oldName
 })
 
 // 鍒犻櫎鍒?
-ipcMain.handle('db:dropColumn', async (event, id, database, tableName, columnName) => {
+ipcMain.handle('db:dropColumn', async (event, id, database, tableName, columnName, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
   const runtime = ensureGovernanceRuntime()
@@ -2116,6 +2213,7 @@ ipcMain.handle('db:dropColumn', async (event, id, database, tableName, columnNam
     tableName,
     classification: 'DDL',
     statementType: 'DROP_COLUMN',
+    approval: governanceOptions,
     highRiskReasons: ['drop-column'],
     flashbackReasonCodes: ['schema-operation-not-supported'],
   })
@@ -2156,9 +2254,10 @@ ipcMain.handle('db:dropColumn', async (event, id, database, tableName, columnNam
       riskLevel: enforcement.riskLevel,
       success: true,
       durationMs: Date.now() - startedAt,
-      decision: enforcement.evaluation.decision?.decision,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
       highRiskReasons: ['drop-column'],
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: true, message: '列删除成功', governance: enforcement.governance }
@@ -2178,9 +2277,10 @@ ipcMain.handle('db:dropColumn', async (event, id, database, tableName, columnNam
       success: false,
       error: e,
       durationMs: Date.now() - startedAt,
-      decision: enforcement.evaluation.decision?.decision,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
       highRiskReasons: ['drop-column'],
-      decisionNotes: enforcement.evaluation.decision?.notes ?? [],
+      decisionNotes: enforcement.decisionNotes,
       flashbackReasonCodes: ['schema-operation-not-supported'],
     })
     return { success: false, message: e.message }
@@ -2267,9 +2367,21 @@ ipcMain.handle('db:executeMultiSQL', async (event, id, sqls, governanceOptions =
   }
 
   try {
-    // 灏?SQL 璇彞鎸夊垎鍙峰垎鍓插苟閫愭潯鎵ц
-    const statements = sqls.split(';').map(s => s.trim()).filter(s => s.length > 0 && !s.startsWith('--'))
-    
+    const split = splitSqlStatements(sqls)
+    if (!split.ok || split.statements.length === 0) {
+      const failed = await runtime.failRawSqlOperation({
+        auditRecord: governance.auditRecord,
+        error: new Error('Unable to parse SQL statements for execution'),
+        durationMs: Date.now() - startedAt,
+      })
+      return {
+        success: false,
+        message: failed.result.error || 'Unable to parse SQL statements for execution',
+        governance: failed.result.governance,
+      }
+    }
+
+    const statements = split.statements.map((statement) => statement.trim()).filter((statement) => statement.length > 0)
     for (const sql of statements) {
       await executeQuery(connInfo.connection, connInfo.type, sql)
     }

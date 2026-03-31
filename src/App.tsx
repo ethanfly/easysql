@@ -14,6 +14,20 @@ import { useConnections, useDatabaseOperations, useTableOperations, useTabOperat
 import { Database, Loader2, CheckCircle, XCircle, AlertCircle, Shield } from 'lucide-react'
 
 function App() {
+  type GovernedMutationResponse = {
+    success?: boolean
+    message?: string
+    governance?: {
+      classification?: string
+      statementType?: string
+      riskLevel?: string
+      decision?: string
+      highRiskReasons?: string[]
+      approvalRequest?: GovernanceApprovalRequest | null
+    } | null
+    insertId?: number
+  }
+
   const [activeConnection, setActiveConnection] = useState<string | null>(null)
   const [selectedDatabase, setSelectedDatabase] = useState<string | null>(null)
   const [showConnectionModal, setShowConnectionModal] = useState(false)
@@ -78,6 +92,63 @@ function App() {
 
   // 导入导出
   const { importConnections: doImportConnections, exportConnections: doExportConnections } = useImportExport(connections, setConnections, showNotification)
+  const electronAPI = window.electronAPI
+
+  const requestGovernanceApproval = useCallback(async (governance: GovernedMutationResponse['governance']) => {
+    if (!governance?.approvalRequest?.requestId || !governance.approvalRequest?.token) {
+      throw new Error('Governance approval request is incomplete')
+    }
+
+    const confirmed = window.confirm(
+      [
+        '本次操作需要治理审批。',
+        `分类: ${governance.classification || 'UNKNOWN'}`,
+        `语句类型: ${governance.statementType || 'UNKNOWN_STATEMENT'}`,
+        `风险级别: ${governance.riskLevel || 'unknown'}`,
+        governance.highRiskReasons?.length ? `原因: ${governance.highRiskReasons.join(', ')}` : '',
+        '',
+        '确认继续执行吗？',
+      ].filter(Boolean).join('\n')
+    )
+
+    if (!confirmed) {
+      throw new Error('已取消需要审批的操作')
+    }
+
+    const approvalResult = await api.approveGovernanceDecision(governance.approvalRequest)
+    if (!approvalResult.success || !approvalResult.approved) {
+      throw new Error(approvalResult.message || '治理审批失败')
+    }
+
+    return {
+      requestId: approvalResult.requestId,
+      token: approvalResult.token,
+      connectionId: approvalResult.connectionId,
+      source: approvalResult.source,
+      operationHash: approvalResult.operationHash,
+    }
+  }, [])
+
+  const executeGovernedMutation = useCallback(async (
+    action: (approval?: GovernanceApprovalRequest) => Promise<GovernedMutationResponse>,
+  ) => {
+    let approval: GovernanceApprovalRequest | undefined
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await action(approval)
+      if (result?.success) {
+        return result
+      }
+
+      if (result?.governance?.decision !== 'confirm') {
+        throw new Error(result?.message || '操作失败')
+      }
+
+      approval = await requestGovernanceApproval(result.governance)
+    }
+
+    throw new Error('治理审批失败')
+  }, [requestGovernanceApproval])
 
   // 连接数据库
   const handleConnect = useCallback(async (conn: Connection) => {
@@ -341,7 +412,16 @@ function App() {
         const row = tab.data[rowIndex]
         if (!row) continue
         const pkValue = row[primaryKeyCol]
-        await api.updateTableRow(tab.connectionId, tab.database, tab.tableName, primaryKeyCol, pkValue, changes)
+        await executeGovernedMutation((approval) =>
+          electronAPI.updateRow(
+            tab.connectionId,
+            tab.database,
+            tab.tableName,
+            { column: primaryKeyCol, value: pkValue },
+            changes,
+            approval,
+          ),
+        )
       }
 
       // 处理删除
@@ -349,7 +429,15 @@ function App() {
         const row = tab.data[rowIndex]
         if (!row) continue
         const pkValue = row[primaryKeyCol]
-        await api.deleteTableRow(tab.connectionId, tab.database, tab.tableName, primaryKeyCol, pkValue)
+        await executeGovernedMutation((approval) =>
+          electronAPI.deleteRow(
+            tab.connectionId,
+            tab.database,
+            tab.tableName,
+            { column: primaryKeyCol, value: pkValue },
+            approval,
+          ),
+        )
       }
 
       // 处理新增
@@ -361,7 +449,16 @@ function App() {
           }
         })
         if (Object.keys(insertData).length > 0) {
-          await api.insertTableRow(tab.connectionId, tab.database, tab.tableName, insertData)
+          await executeGovernedMutation((approval) =>
+            electronAPI.insertRow(
+              tab.connectionId,
+              tab.database,
+              tab.tableName,
+              Object.keys(insertData),
+              Object.values(insertData),
+              approval,
+            ),
+          )
         }
       }
 
@@ -376,7 +473,7 @@ function App() {
         return next
       })
     }
-  }, [tabs, handleLoadTablePage, setLoadingTables, showNotification])
+  }, [tabs, handleLoadTablePage, setLoadingTables, showNotification, executeGovernedMutation, electronAPI])
 
   // 丢弃更改
   const handleDiscardTableChanges = useCallback((tabId: string) => {
@@ -571,16 +668,27 @@ function App() {
     setShowCreateDbModal(true)
   }, [])
 
+  const handleSubmitCreateDatabase = useCallback(async (connectionId: string, name: string, charset: string, collation: string) => {
+    const result = await executeGovernedMutation((approval) =>
+      electronAPI.createDatabase(connectionId, name, charset, collation, approval),
+    )
+    if (!result.success) {
+      throw new Error(result.message || 'Create database failed')
+    }
+  }, [executeGovernedMutation, electronAPI])
+
   // 删除数据库
   const handleDropDatabase = useCallback(async (connectionId: string, database: string) => {
     try {
-      await api.dropDatabase(connectionId, database)
+      await executeGovernedMutation((approval) =>
+        electronAPI.dropDatabase(connectionId, database, approval),
+      )
       showNotification('success', `数据库 ${database} 已删除`)
       await fetchDatabases(connectionId)
     } catch (err) {
       showNotification('error', '删除失败：' + (err as Error).message)
     }
-  }, [fetchDatabases, showNotification])
+  }, [fetchDatabases, showNotification, executeGovernedMutation, electronAPI])
 
   // 创建表 - 使用 TableDesigner
   const handleCreateTable = useCallback((connectionId: string, database: string) => {
@@ -591,23 +699,27 @@ function App() {
   // 删除表
   const handleDropTable = useCallback(async (connectionId: string, database: string, table: string) => {
     try {
-      await api.dropTable(connectionId, database, table)
+      await executeGovernedMutation((approval) =>
+        electronAPI.dropTable(connectionId, database, table, approval),
+      )
       showNotification('success', `表 ${table} 已删除`)
       await fetchTables(connectionId, database)
     } catch (err) {
       showNotification('error', '删除失败：' + (err as Error).message)
     }
-  }, [fetchTables, showNotification])
+  }, [fetchTables, showNotification, executeGovernedMutation, electronAPI])
 
   // 清空表
   const handleTruncateTable = useCallback(async (connectionId: string, database: string, table: string) => {
     try {
-      await api.truncateTable(connectionId, database, table)
+      await executeGovernedMutation((approval) =>
+        electronAPI.truncateTable(connectionId, database, table, approval),
+      )
       showNotification('success', `表 ${table} 已清空`)
     } catch (err) {
       showNotification('error', '清空失败：' + (err as Error).message)
     }
-  }, [showNotification])
+  }, [showNotification, executeGovernedMutation, electronAPI])
 
   // 重命名表
   const handleRenameTable = useCallback((connectionId: string, database: string, table: string) => {
@@ -619,7 +731,9 @@ function App() {
       onConfirm: async (newName: string) => {
         if (newName && newName !== table) {
           try {
-            await api.renameTable(connectionId, database, table, newName)
+            await executeGovernedMutation((approval) =>
+              electronAPI.renameTable(connectionId, database, table, newName, approval),
+            )
             showNotification('success', `表已重命名为 ${newName}`)
             await fetchTables(connectionId, database)
           } catch (err) {
@@ -629,7 +743,7 @@ function App() {
         setInputDialog(null)
       }
     })
-  }, [fetchTables, showNotification])
+  }, [fetchTables, showNotification, executeGovernedMutation, electronAPI])
 
   // 复制表
   const handleDuplicateTable = useCallback((connectionId: string, database: string, table: string) => {
@@ -641,7 +755,9 @@ function App() {
       onConfirm: async (newName: string) => {
         if (newName) {
           try {
-            await api.duplicateTable(connectionId, database, table, newName)
+            await executeGovernedMutation((approval) =>
+              electronAPI.duplicateTable(connectionId, database, table, newName, false, approval),
+            )
             showNotification('success', `表已复制为 ${newName}`)
             await fetchTables(connectionId, database)
           } catch (err) {
@@ -651,7 +767,7 @@ function App() {
         setInputDialog(null)
       }
     })
-  }, [fetchTables, showNotification])
+  }, [fetchTables, showNotification, executeGovernedMutation, electronAPI])
 
   // 刷新表列表
   const handleRefreshTables = useCallback(async (connectionId: string, database: string) => {
@@ -741,6 +857,7 @@ function App() {
           onAddTableRow={handleAddTableRow}
           onUpdateNewRow={handleUpdateNewRow}
           onDeleteNewRow={handleDeleteNewRow}
+          onExecuteGovernedMutation={executeGovernedMutation}
           onSelectConnection={handleConnectionChange}
           onSelectDatabase={handleSelectDatabase}
           onFetchTableColumns={handleFetchTableColumns}
@@ -794,6 +911,7 @@ function App() {
         isOpen={showCreateDbModal}
         connectionId={createDbConnectionId}
         onClose={() => { setShowCreateDbModal(false); setCreateDbConnectionId(null) }}
+        onCreate={handleSubmitCreateDatabase}
         onCreated={async () => {
           if (createDbConnectionId) await fetchDatabases(createDbConnectionId)
         }}
@@ -804,6 +922,14 @@ function App() {
         connectionId={createTableContext?.connectionId || null}
         database={createTableContext?.database || null}
         onClose={() => { setShowCreateTableModal(false); setCreateTableContext(null) }}
+        onCreate={async (connectionId, database, tableName, columns) => {
+          const result = await executeGovernedMutation((approval) =>
+            electronAPI.createTable(connectionId, database, tableName, columns, approval),
+          )
+          if (!result.success) {
+            throw new Error(result.message || 'Create table failed')
+          }
+        }}
         onCreated={async () => {
           if (createTableContext) await fetchTables(createTableContext.connectionId, createTableContext.database)
         }}
@@ -820,7 +946,12 @@ function App() {
           onClose={() => { setShowTableDesigner(false); setTableDesignerContext(null) }}
           onSave={async (sql: string) => {
             try {
-              await api.executeQuery(tableDesignerContext.connectionId, sql)
+              const result = await executeGovernedMutation((approval) =>
+                electronAPI.executeMultiSQL(tableDesignerContext.connectionId, sql, approval),
+              )
+              if (!result.success) {
+                throw new Error(result.message || '表结构保存失败')
+              }
               await fetchTables(tableDesignerContext.connectionId, tableDesignerContext.database)
               showNotification('success', tableDesignerContext.mode === 'create' ? '表创建成功' : '表结构已更新')
               return { success: true, message: '' }

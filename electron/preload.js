@@ -46,35 +46,35 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getColumns: (id, database, table) => ipcRenderer.invoke('db:getColumns', id, database, table),
   getTableData: (id, database, table, page, pageSize) =>
     ipcRenderer.invoke('db:getTableData', id, database, table, page, pageSize),
-  updateRow: (id, database, table, primaryKey, updates) =>
-    ipcRenderer.invoke('db:updateRow', id, database, table, primaryKey, updates),
-  deleteRow: (id, database, table, primaryKey) =>
-    ipcRenderer.invoke('db:deleteRow', id, database, table, primaryKey),
-  insertRow: (id, database, table, columns, values) =>
-    ipcRenderer.invoke('db:insertRow', id, database, table, columns, values),
+  updateRow: (id, database, table, primaryKey, updates, governanceOptions) =>
+    ipcRenderer.invoke('db:updateRow', id, database, table, primaryKey, updates, governanceOptions),
+  deleteRow: (id, database, table, primaryKey, governanceOptions) =>
+    ipcRenderer.invoke('db:deleteRow', id, database, table, primaryKey, governanceOptions),
+  insertRow: (id, database, table, columns, values, governanceOptions) =>
+    ipcRenderer.invoke('db:insertRow', id, database, table, columns, values, governanceOptions),
 
   // Database management
-  createDatabase: (id, dbName, charset, collation) =>
-    ipcRenderer.invoke('db:createDatabase', id, dbName, charset, collation),
-  dropDatabase: (id, dbName) => ipcRenderer.invoke('db:dropDatabase', id, dbName),
+  createDatabase: (id, dbName, charset, collation, governanceOptions) =>
+    ipcRenderer.invoke('db:createDatabase', id, dbName, charset, collation, governanceOptions),
+  dropDatabase: (id, dbName, governanceOptions) => ipcRenderer.invoke('db:dropDatabase', id, dbName, governanceOptions),
 
   // Table management
-  createTable: (id, database, tableName, columns) =>
-    ipcRenderer.invoke('db:createTable', id, database, tableName, columns),
-  dropTable: (id, database, tableName) => ipcRenderer.invoke('db:dropTable', id, database, tableName),
-  truncateTable: (id, database, tableName) => ipcRenderer.invoke('db:truncateTable', id, database, tableName),
-  renameTable: (id, database, oldName, newName) =>
-    ipcRenderer.invoke('db:renameTable', id, database, oldName, newName),
-  duplicateTable: (id, database, sourceTable, newTable, withData) =>
-    ipcRenderer.invoke('db:duplicateTable', id, database, sourceTable, newTable, withData),
+  createTable: (id, database, tableName, columns, governanceOptions) =>
+    ipcRenderer.invoke('db:createTable', id, database, tableName, columns, governanceOptions),
+  dropTable: (id, database, tableName, governanceOptions) => ipcRenderer.invoke('db:dropTable', id, database, tableName, governanceOptions),
+  truncateTable: (id, database, tableName, governanceOptions) => ipcRenderer.invoke('db:truncateTable', id, database, tableName, governanceOptions),
+  renameTable: (id, database, oldName, newName, governanceOptions) =>
+    ipcRenderer.invoke('db:renameTable', id, database, oldName, newName, governanceOptions),
+  duplicateTable: (id, database, sourceTable, newTable, withData, governanceOptions) =>
+    ipcRenderer.invoke('db:duplicateTable', id, database, sourceTable, newTable, withData, governanceOptions),
 
   // Column management
-  addColumn: (id, database, tableName, column) =>
-    ipcRenderer.invoke('db:addColumn', id, database, tableName, column),
-  modifyColumn: (id, database, tableName, oldName, column) =>
-    ipcRenderer.invoke('db:modifyColumn', id, database, tableName, oldName, column),
-  dropColumn: (id, database, tableName, columnName) =>
-    ipcRenderer.invoke('db:dropColumn', id, database, tableName, columnName),
+  addColumn: (id, database, tableName, column, governanceOptions) =>
+    ipcRenderer.invoke('db:addColumn', id, database, tableName, column, governanceOptions),
+  modifyColumn: (id, database, tableName, oldName, column, governanceOptions) =>
+    ipcRenderer.invoke('db:modifyColumn', id, database, tableName, oldName, column, governanceOptions),
+  dropColumn: (id, database, tableName, columnName, governanceOptions) =>
+    ipcRenderer.invoke('db:dropColumn', id, database, tableName, columnName, governanceOptions),
 
   // Table designer
   getTableInfo: (id, database, tableName) => ipcRenderer.invoke('db:getTableInfo', id, database, tableName),

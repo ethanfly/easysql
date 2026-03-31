@@ -193,6 +193,13 @@ export interface GovernanceExecutionInfo {
   maskingApplied?: boolean
 }
 
+export interface GovernedMutationResult {
+  success: boolean
+  message: string
+  governance?: GovernanceExecutionInfo | null
+  insertId?: number
+}
+
 export interface GovernanceAuditRecord {
   id: string
   timestamp: string
@@ -248,19 +255,19 @@ declare global {
       getTables: (id: string, database: string) => Promise<TableInfo[]>
       getColumns: (id: string, database: string, table: string) => Promise<ColumnInfo[]>
       getTableData: (id: string, database: string, table: string, page: number, pageSize: number) => Promise<TableDataResult>
-      updateRow: (id: string, database: string, table: string, primaryKey: { column: string; value: any }, updates: Record<string, any>) => Promise<{ success: boolean; message: string }>
-      deleteRow: (id: string, database: string, table: string, primaryKey: { column: string; value: any }) => Promise<{ success: boolean; message: string }>
-      insertRow: (id: string, database: string, table: string, columns: string[], values: any[]) => Promise<{ success: boolean; message: string; insertId?: number }>
-      createDatabase: (id: string, dbName: string, charset?: string, collation?: string) => Promise<{ success: boolean; message: string }>
-      dropDatabase: (id: string, dbName: string) => Promise<{ success: boolean; message: string }>
-      createTable: (id: string, database: string, tableName: string, columns: any[]) => Promise<{ success: boolean; message: string }>
-      dropTable: (id: string, database: string, tableName: string) => Promise<{ success: boolean; message: string }>
-      truncateTable: (id: string, database: string, tableName: string) => Promise<{ success: boolean; message: string }>
-      renameTable: (id: string, database: string, oldName: string, newName: string) => Promise<{ success: boolean; message: string }>
-      duplicateTable: (id: string, database: string, sourceTable: string, newTable: string, withData?: boolean) => Promise<{ success: boolean; message: string }>
-      addColumn: (id: string, database: string, tableName: string, column: any) => Promise<{ success: boolean; message: string }>
-      modifyColumn: (id: string, database: string, tableName: string, oldName: string, column: any) => Promise<{ success: boolean; message: string }>
-      dropColumn: (id: string, database: string, tableName: string, columnName: string) => Promise<{ success: boolean; message: string }>
+      updateRow: (id: string, database: string, table: string, primaryKey: { column: string; value: any }, updates: Record<string, any>, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      deleteRow: (id: string, database: string, table: string, primaryKey: { column: string; value: any }, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      insertRow: (id: string, database: string, table: string, columns: string[], values: any[], governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      createDatabase: (id: string, dbName: string, charset?: string, collation?: string, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      dropDatabase: (id: string, dbName: string, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      createTable: (id: string, database: string, tableName: string, columns: any[], governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      dropTable: (id: string, database: string, tableName: string, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      truncateTable: (id: string, database: string, tableName: string, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      renameTable: (id: string, database: string, oldName: string, newName: string, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      duplicateTable: (id: string, database: string, sourceTable: string, newTable: string, withData?: boolean, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      addColumn: (id: string, database: string, tableName: string, column: any, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      modifyColumn: (id: string, database: string, tableName: string, oldName: string, column: any, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      dropColumn: (id: string, database: string, tableName: string, columnName: string, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
       getTableInfo: (id: string, database: string, tableName: string) => Promise<TableDesignerInfo>
       getIndexes: (id: string, database: string, tableName: string) => Promise<IndexInfo[]>
       getForeignKeys: (id: string, database: string, tableName: string) => Promise<ForeignKeyInfo[]>
