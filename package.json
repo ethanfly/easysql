@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "test": "node --test",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "electron:build": "node scripts/bump-version.js patch && vite build && electron-builder",
     "electron:build:minor": "node scripts/bump-version.js minor && vite build && electron-builder",

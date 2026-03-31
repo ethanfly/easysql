@@ -379,17 +379,19 @@ export function useQueryOperations(
   setTabs: React.Dispatch<React.SetStateAction<(QueryTab | TableTab)[]>>,
   showNotification: (type: 'success' | 'error' | 'info', msg: string) => void
 ) {
-  const runQuery = useCallback(async (tabId: string, connectionId: string, sql: string) => {
+  const runQuery = useCallback(async (tabId: string, connectionId: string, sql: string, governanceOptions?: any) => {
     try {
-      const result = await api.executeQuery(connectionId, sql)
+      const result = await api.executeQuery(connectionId, sql, governanceOptions)
       setTabs(prev => prev.map(t => {
         if (t.id === tabId && !('tableName' in t)) {
           return { ...t, results: result }
         }
         return t
       }))
+      return result
     } catch (err) {
       showNotification('error', '查询失败：' + (err as Error).message)
+      return null
     }
   }, [setTabs, showNotification])
 

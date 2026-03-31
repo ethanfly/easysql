@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react'
 import { X, Database, Settings } from 'lucide-react'
-import api from '../lib/electron-api'
 
 interface Props {
   isOpen: boolean
   connectionId: string | null
   onClose: () => void
   onCreated: () => void
+  onCreate: (connectionId: string, name: string, charset: string, collation: string) => Promise<void>
 }
 
 // MySQL 字符集和排序规则
@@ -18,7 +18,7 @@ const CHARSETS = [
   { name: 'gb2312', collations: ['gb2312_chinese_ci', 'gb2312_bin'] },
 ]
 
-export default function CreateDatabaseModal({ isOpen, connectionId, onClose, onCreated }: Props) {
+export default function CreateDatabaseModal({ isOpen, connectionId, onClose, onCreated, onCreate }: Props) {
   const [name, setName] = useState('')
   const [charset, setCharset] = useState('utf8mb4')
   const [collation, setCollation] = useState('utf8mb4_general_ci')
@@ -55,7 +55,7 @@ export default function CreateDatabaseModal({ isOpen, connectionId, onClose, onC
     setError('')
 
     try {
-      await api.createDatabase(connectionId, name.trim(), charset, collation)
+      await onCreate(connectionId, name.trim(), charset, collation)
       onCreated()
       onClose()
     } catch (err) {

@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react'
 import { X, Table2, Plus, Trash2, Key, ArrowUp, ArrowDown, Check } from 'lucide-react'
-import api from '../lib/electron-api'
 
 interface ColumnDef {
   id: string
@@ -20,6 +19,7 @@ interface Props {
   database: string | null
   onClose: () => void
   onCreated: () => void
+  onCreate: (connectionId: string, database: string, tableName: string, columns: ColumnDef[]) => Promise<void>
 }
 
 // 常用数据类型
@@ -43,7 +43,7 @@ const DEFAULT_COLUMN: Omit<ColumnDef, 'id'> = {
   comment: '',
 }
 
-export default function CreateTableModal({ isOpen, connectionId, database, onClose, onCreated }: Props) {
+export default function CreateTableModal({ isOpen, connectionId, database, onClose, onCreated, onCreate }: Props) {
   const [tableName, setTableName] = useState('')
   const [columns, setColumns] = useState<ColumnDef[]>([
     { ...DEFAULT_COLUMN, id: crypto.randomUUID(), name: 'id', primaryKey: true, autoIncrement: true, nullable: false }
@@ -104,7 +104,7 @@ export default function CreateTableModal({ isOpen, connectionId, database, onClo
     setError('')
 
     try {
-      await api.createTable(connectionId, database, tableName.trim(), columns.filter(c => c.name.trim()))
+      await onCreate(connectionId, database, tableName.trim(), columns.filter(c => c.name.trim()))
       onCreated()
       onClose()
     } catch (err) {

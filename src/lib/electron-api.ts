@@ -1,4 +1,15 @@
 // Electron API 类型声明
+import type {
+  GovernedMutationResult,
+  GovernanceApprovalRequest,
+  GovernanceApprovalResponse,
+  GovernanceAuditRecord,
+  GovernanceConfig,
+  GovernanceExecutionInfo,
+  GovernanceFlashbackRecord,
+  GovernanceLogFilters,
+} from '../types'
+
 declare global {
   interface Window {
     electronAPI: {
@@ -10,42 +21,48 @@ declare global {
       // 配置存储
       loadConnections: () => Promise<any[]>
       saveConnections: (connections: any[]) => Promise<{ success: boolean; message?: string }>
+      loadGovernanceConfig: () => Promise<GovernanceConfig | null>
+      saveGovernanceConfig: (config: GovernanceConfig) => Promise<{ success: boolean; message?: string }>
+      listAuditLogs: (filters?: GovernanceLogFilters) => Promise<GovernanceAuditRecord[]>
+      listFlashbackLogs: (filters?: GovernanceLogFilters) => Promise<GovernanceFlashbackRecord[]>
+      getFlashbackRecord: (id: string) => Promise<GovernanceFlashbackRecord | null>
+      approveGovernanceDecision: (approval: GovernanceApprovalRequest) => Promise<GovernanceApprovalResponse>
       
       // 数据库操作
       testConnection: (config: any) => Promise<{ success: boolean; message: string }>
       connect: (config: any) => Promise<{ success: boolean; message: string }>
       disconnect: (id: string) => Promise<void>
-      query: (id: string, sql: string) => Promise<{ columns: string[]; rows: any[][]; error?: string; affectedRows?: number }>
+      query: (id: string, sql: string, governanceOptions?: GovernanceApprovalRequest) => Promise<{ columns: string[]; rows: any[][]; error?: string; affectedRows?: number; governance?: GovernanceExecutionInfo }>
       getDatabases: (id: string) => Promise<string[]>
       getTables: (id: string, database: string) => Promise<TableInfo[]>
       getColumns: (id: string, database: string, table: string) => Promise<ColumnInfo[]>
       getTableData: (id: string, database: string, table: string, page: number, pageSize: number) => Promise<TableDataResult>
-      updateRow: (id: string, database: string, table: string, primaryKey: { column: string; value: any }, updates: Record<string, any>) => Promise<{ success: boolean; message: string }>
-      deleteRow: (id: string, database: string, table: string, primaryKey: { column: string; value: any }) => Promise<{ success: boolean; message: string }>
-      insertRow: (id: string, database: string, table: string, columns: string[], values: any[]) => Promise<{ success: boolean; message: string; insertId?: number }>
+      updateRow: (id: string, database: string, table: string, primaryKey: { column: string; value: any }, updates: Record<string, any>, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      deleteRow: (id: string, database: string, table: string, primaryKey: { column: string; value: any }, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      insertRow: (id: string, database: string, table: string, columns: string[], values: any[], governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
       
       // 数据库管理
-      createDatabase: (id: string, dbName: string, charset?: string, collation?: string) => Promise<{ success: boolean; message: string }>
-      dropDatabase: (id: string, dbName: string) => Promise<{ success: boolean; message: string }>
+      createDatabase: (id: string, dbName: string, charset?: string, collation?: string, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      dropDatabase: (id: string, dbName: string, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
       
       // 表管理
-      createTable: (id: string, database: string, tableName: string, columns: any[]) => Promise<{ success: boolean; message: string }>
-      dropTable: (id: string, database: string, tableName: string) => Promise<{ success: boolean; message: string }>
-      truncateTable: (id: string, database: string, tableName: string) => Promise<{ success: boolean; message: string }>
-      renameTable: (id: string, database: string, oldName: string, newName: string) => Promise<{ success: boolean; message: string }>
-      duplicateTable: (id: string, database: string, sourceTable: string, newTable: string, withData?: boolean) => Promise<{ success: boolean; message: string }>
+      createTable: (id: string, database: string, tableName: string, columns: any[], governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      dropTable: (id: string, database: string, tableName: string, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      truncateTable: (id: string, database: string, tableName: string, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      renameTable: (id: string, database: string, oldName: string, newName: string, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      duplicateTable: (id: string, database: string, sourceTable: string, newTable: string, withData?: boolean, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
       
       // 列管理
-      addColumn: (id: string, database: string, tableName: string, column: any) => Promise<{ success: boolean; message: string }>
-      modifyColumn: (id: string, database: string, tableName: string, oldName: string, column: any) => Promise<{ success: boolean; message: string }>
-      dropColumn: (id: string, database: string, tableName: string, columnName: string) => Promise<{ success: boolean; message: string }>
+      addColumn: (id: string, database: string, tableName: string, column: any, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      modifyColumn: (id: string, database: string, tableName: string, oldName: string, column: any, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
+      dropColumn: (id: string, database: string, tableName: string, columnName: string, governanceOptions?: GovernanceApprovalRequest) => Promise<GovernedMutationResult>
       
       // 表设计器相关
       getTableInfo: (id: string, database: string, tableName: string) => Promise<TableDesignerInfo>
       getIndexes: (id: string, database: string, tableName: string) => Promise<IndexInfo[]>
       getForeignKeys: (id: string, database: string, tableName: string) => Promise<ForeignKeyInfo[]>
       getColumnNames: (id: string, database: string, tableName: string) => Promise<string[]>
-      executeMultiSQL: (id: string, sqls: string) => Promise<{ success: boolean; message: string }>
+      executeMultiSQL: (id: string, sqls: string, governanceOptions?: GovernanceApprovalRequest) => Promise<{ success: boolean; message: string; governance?: GovernanceExecutionInfo }>
       
       // 文件操作
       openFile: () => Promise<{ path: string; content: string; name: string } | null>
@@ -111,6 +128,7 @@ export interface TableDataResult {
   total: number
   page: number
   pageSize: number
+  governance?: GovernanceExecutionInfo
 }
 
 // 表设计器相关类型
@@ -175,6 +193,18 @@ const getElectronAPI = () => {
   return null
 }
 
+function normalizeGovernedMutationResult(
+  result: Partial<GovernedMutationResult> | null | undefined,
+  fallbackMessage: string,
+): GovernedMutationResult {
+  return {
+    success: result?.success === true,
+    message: typeof result?.message === 'string' && result.message.trim().length > 0 ? result.message : fallbackMessage,
+    governance: result?.governance ?? null,
+    insertId: result?.insertId,
+  }
+}
+
 // API 实现
 const api = {
   // 窗口控制
@@ -235,17 +265,19 @@ const api = {
     }
   },
   
-  query: async (id: string, sql: string): Promise<{ columns: string[]; rows: any[]; error?: string }> => {
+  query: async (id: string, sql: string, governanceOptions?: GovernanceApprovalRequest): Promise<{ columns: string[]; rows: any[]; error?: string; affectedRows?: number; governance?: GovernanceExecutionInfo }> => {
     const electronAPI = getElectronAPI()
     if (!electronAPI) {
       return { columns: [], rows: [], error: 'Electron API 不可用' }
     }
     try {
-      const result = await electronAPI.query(id, sql)
+      const result = await electronAPI.query(id, sql, governanceOptions)
       return {
         columns: result.columns,
         rows: result.rows,
         error: result.error,
+        affectedRows: result.affectedRows,
+        governance: result.governance,
       }
     } catch (e: any) {
       return { columns: [], rows: [], error: e.toString() }
@@ -253,17 +285,19 @@ const api = {
   },
 
   // 执行查询（query 的别名，用于兼容）
-  executeQuery: async (id: string, sql: string): Promise<{ columns: string[]; rows: any[]; error?: string }> => {
+  executeQuery: async (id: string, sql: string, governanceOptions?: GovernanceApprovalRequest): Promise<{ columns: string[]; rows: any[]; error?: string; affectedRows?: number; governance?: GovernanceExecutionInfo }> => {
     const electronAPI = getElectronAPI()
     if (!electronAPI) {
       return { columns: [], rows: [], error: 'Electron API 不可用' }
     }
     try {
-      const result = await electronAPI.query(id, sql)
+      const result = await electronAPI.query(id, sql, governanceOptions)
       return {
         columns: result.columns,
         rows: result.rows,
         error: result.error,
+        affectedRows: result.affectedRows,
+        governance: result.governance,
       }
     } catch (e: any) {
       return { columns: [], rows: [], error: e.toString() }
@@ -315,7 +349,7 @@ const api = {
     }
   },
   
-  getTableData: async (id: string, database: string, table: string, page?: number, pageSize?: number): Promise<{ data: any[]; total: number; columns?: ColumnInfo[] }> => {
+  getTableData: async (id: string, database: string, table: string, page?: number, pageSize?: number): Promise<{ data: any[]; total: number; columns?: ColumnInfo[]; governance?: GovernanceExecutionInfo }> => {
     const electronAPI = getElectronAPI()
     if (!electronAPI) return { data: [], total: 0 }
     try {
@@ -337,6 +371,7 @@ const api = {
         data,
         total: result.total,
         columns: result.columns,
+        governance: result.governance,
       }
     } catch (e) {
       console.error('getTableData error:', e)
@@ -344,177 +379,177 @@ const api = {
     }
   },
 
-  updateRow: async (id: string, database: string, tableName: string, primaryKey: { column: string; value: any }, updates: Record<string, any>): Promise<{ success?: boolean; error?: string }> => {
+  updateRow: async (id: string, database: string, tableName: string, primaryKey: { column: string; value: any }, updates: Record<string, any>, governanceOptions?: GovernanceApprovalRequest): Promise<GovernedMutationResult> => {
     const electronAPI = getElectronAPI()
-    if (!electronAPI) return { success: false, error: 'Electron API 不可用' }
+    if (!electronAPI) return normalizeGovernedMutationResult(null, 'Electron API 不可用')
     try {
-      const result = await electronAPI.updateRow(id, database, tableName, primaryKey, updates)
-      return { success: result.success, error: result.success ? undefined : result.message }
+      const result = await electronAPI.updateRow(id, database, tableName, primaryKey, updates, governanceOptions)
+      return normalizeGovernedMutationResult(result, '更新失败')
     } catch (e: any) {
-      return { success: false, error: e.toString() }
+      return normalizeGovernedMutationResult({ message: e.toString() }, e.toString())
     }
   },
 
-  deleteRow: async (id: string, database: string, tableName: string, primaryKey: { column: string; value: any }): Promise<{ success?: boolean; error?: string }> => {
+  deleteRow: async (id: string, database: string, tableName: string, primaryKey: { column: string; value: any }, governanceOptions?: GovernanceApprovalRequest): Promise<GovernedMutationResult> => {
     const electronAPI = getElectronAPI()
-    if (!electronAPI) return { success: false, error: 'Electron API 不可用' }
+    if (!electronAPI) return normalizeGovernedMutationResult(null, 'Electron API 不可用')
     try {
-      const result = await electronAPI.deleteRow(id, database, tableName, primaryKey)
-      return { success: result.success, error: result.success ? undefined : result.message }
+      const result = await electronAPI.deleteRow(id, database, tableName, primaryKey, governanceOptions)
+      return normalizeGovernedMutationResult(result, '删除失败')
     } catch (e: any) {
-      return { success: false, error: e.toString() }
+      return normalizeGovernedMutationResult({ message: e.toString() }, e.toString())
     }
   },
 
-  insertRow: async (id: string, database: string, tableName: string, columns: string[], values: any[]): Promise<{ success?: boolean; error?: string; insertId?: number }> => {
+  insertRow: async (id: string, database: string, tableName: string, columns: string[], values: any[], governanceOptions?: GovernanceApprovalRequest): Promise<GovernedMutationResult> => {
     const electronAPI = getElectronAPI()
-    if (!electronAPI) return { success: false, error: 'Electron API 不可用' }
+    if (!electronAPI) return normalizeGovernedMutationResult(null, 'Electron API 不可用')
     try {
-      const result = await electronAPI.insertRow(id, database, tableName, columns, values)
-      return { success: result.success, error: result.success ? undefined : result.message, insertId: result.insertId }
+      const result = await electronAPI.insertRow(id, database, tableName, columns, values, governanceOptions)
+      return normalizeGovernedMutationResult(result, '插入失败')
     } catch (e: any) {
-      return { success: false, error: e.toString() }
+      return normalizeGovernedMutationResult({ message: e.toString() }, e.toString())
     }
   },
 
   // 更新行（简化参数格式，兼容旧代码）
-  updateTableRow: async (id: string, database: string, tableName: string, primaryKeyColumn: string, primaryKeyValue: any, updates: Record<string, any>): Promise<{ success?: boolean; error?: string }> => {
+  updateTableRow: async (id: string, database: string, tableName: string, primaryKeyColumn: string, primaryKeyValue: any, updates: Record<string, any>): Promise<GovernedMutationResult> => {
     const electronAPI = getElectronAPI()
-    if (!electronAPI) return { success: false, error: 'Electron API 不可用' }
+    if (!electronAPI) return normalizeGovernedMutationResult(null, 'Electron API 不可用')
     try {
       const result = await electronAPI.updateRow(id, database, tableName, { column: primaryKeyColumn, value: primaryKeyValue }, updates)
-      return { success: result.success, error: result.success ? undefined : result.message }
+      return normalizeGovernedMutationResult(result, '更新失败')
     } catch (e: any) {
-      return { success: false, error: e.toString() }
+      return normalizeGovernedMutationResult({ message: e.toString() }, e.toString())
     }
   },
 
   // 插入行（对象格式，兼容旧代码）
-  insertTableRow: async (id: string, database: string, tableName: string, data: Record<string, any>): Promise<{ success?: boolean; error?: string; insertId?: number }> => {
+  insertTableRow: async (id: string, database: string, tableName: string, data: Record<string, any>): Promise<GovernedMutationResult> => {
     const columns = Object.keys(data)
     const values = Object.values(data)
     const electronAPI = getElectronAPI()
-    if (!electronAPI) return { success: false, error: 'Electron API 不可用' }
+    if (!electronAPI) return normalizeGovernedMutationResult(null, 'Electron API 不可用')
     try {
       const result = await electronAPI.insertRow(id, database, tableName, columns, values)
-      return { success: result.success, error: result.success ? undefined : result.message, insertId: result.insertId }
+      return normalizeGovernedMutationResult(result, '插入失败')
     } catch (e: any) {
-      return { success: false, error: e.toString() }
+      return normalizeGovernedMutationResult({ message: e.toString() }, e.toString())
     }
   },
 
   // 删除行（简化参数格式，兼容旧代码）
-  deleteTableRow: async (id: string, database: string, tableName: string, primaryKeyColumn: string, primaryKeyValue: any): Promise<{ success?: boolean; error?: string }> => {
+  deleteTableRow: async (id: string, database: string, tableName: string, primaryKeyColumn: string, primaryKeyValue: any): Promise<GovernedMutationResult> => {
     const electronAPI = getElectronAPI()
-    if (!electronAPI) return { success: false, error: 'Electron API 不可用' }
+    if (!electronAPI) return normalizeGovernedMutationResult(null, 'Electron API 不可用')
     try {
       const result = await electronAPI.deleteRow(id, database, tableName, { column: primaryKeyColumn, value: primaryKeyValue })
-      return { success: result.success, error: result.success ? undefined : result.message }
+      return normalizeGovernedMutationResult(result, '删除失败')
     } catch (e: any) {
-      return { success: false, error: e.toString() }
+      return normalizeGovernedMutationResult({ message: e.toString() }, e.toString())
     }
   },
 
   // 数据库管理
-  createDatabase: async (id: string, dbName: string, charset = 'utf8mb4', collation = 'utf8mb4_general_ci'): Promise<{ success: boolean; message: string }> => {
+  createDatabase: async (id: string, dbName: string, charset = 'utf8mb4', collation = 'utf8mb4_general_ci', governanceOptions?: GovernanceApprovalRequest): Promise<GovernedMutationResult> => {
     const electronAPI = getElectronAPI()
-    if (!electronAPI) return { success: false, message: 'Electron API 不可用' }
+    if (!electronAPI) return normalizeGovernedMutationResult(null, 'Electron API 不可用')
     try {
-      return await electronAPI.createDatabase(id, dbName, charset, collation)
+      return normalizeGovernedMutationResult(await electronAPI.createDatabase(id, dbName, charset, collation, governanceOptions), '创建数据库失败')
     } catch (e: any) {
-      return { success: false, message: e.toString() }
+      return normalizeGovernedMutationResult({ message: e.toString() }, e.toString())
     }
   },
 
-  dropDatabase: async (id: string, dbName: string): Promise<{ success: boolean; message: string }> => {
+  dropDatabase: async (id: string, dbName: string, governanceOptions?: GovernanceApprovalRequest): Promise<GovernedMutationResult> => {
     const electronAPI = getElectronAPI()
-    if (!electronAPI) return { success: false, message: 'Electron API 不可用' }
+    if (!electronAPI) return normalizeGovernedMutationResult(null, 'Electron API 不可用')
     try {
-      return await electronAPI.dropDatabase(id, dbName)
+      return normalizeGovernedMutationResult(await electronAPI.dropDatabase(id, dbName, governanceOptions), '删除数据库失败')
     } catch (e: any) {
-      return { success: false, message: e.toString() }
+      return normalizeGovernedMutationResult({ message: e.toString() }, e.toString())
     }
   },
 
   // 表管理
-  createTable: async (id: string, database: string, tableName: string, columns: any[]): Promise<{ success: boolean; message: string }> => {
+  createTable: async (id: string, database: string, tableName: string, columns: any[], governanceOptions?: GovernanceApprovalRequest): Promise<GovernedMutationResult> => {
     const electronAPI = getElectronAPI()
-    if (!electronAPI) return { success: false, message: 'Electron API 不可用' }
+    if (!electronAPI) return normalizeGovernedMutationResult(null, 'Electron API 不可用')
     try {
-      return await electronAPI.createTable(id, database, tableName, columns)
+      return normalizeGovernedMutationResult(await electronAPI.createTable(id, database, tableName, columns, governanceOptions), '创建表失败')
     } catch (e: any) {
-      return { success: false, message: e.toString() }
+      return normalizeGovernedMutationResult({ message: e.toString() }, e.toString())
     }
   },
 
-  dropTable: async (id: string, database: string, tableName: string): Promise<{ success: boolean; message: string }> => {
+  dropTable: async (id: string, database: string, tableName: string, governanceOptions?: GovernanceApprovalRequest): Promise<GovernedMutationResult> => {
     const electronAPI = getElectronAPI()
-    if (!electronAPI) return { success: false, message: 'Electron API 不可用' }
+    if (!electronAPI) return normalizeGovernedMutationResult(null, 'Electron API 不可用')
     try {
-      return await electronAPI.dropTable(id, database, tableName)
+      return normalizeGovernedMutationResult(await electronAPI.dropTable(id, database, tableName, governanceOptions), '删除表失败')
     } catch (e: any) {
-      return { success: false, message: e.toString() }
+      return normalizeGovernedMutationResult({ message: e.toString() }, e.toString())
     }
   },
 
-  truncateTable: async (id: string, database: string, tableName: string): Promise<{ success: boolean; message: string }> => {
+  truncateTable: async (id: string, database: string, tableName: string, governanceOptions?: GovernanceApprovalRequest): Promise<GovernedMutationResult> => {
     const electronAPI = getElectronAPI()
-    if (!electronAPI) return { success: false, message: 'Electron API 不可用' }
+    if (!electronAPI) return normalizeGovernedMutationResult(null, 'Electron API 不可用')
     try {
-      return await electronAPI.truncateTable(id, database, tableName)
+      return normalizeGovernedMutationResult(await electronAPI.truncateTable(id, database, tableName, governanceOptions), '清空表失败')
     } catch (e: any) {
-      return { success: false, message: e.toString() }
+      return normalizeGovernedMutationResult({ message: e.toString() }, e.toString())
     }
   },
 
-  renameTable: async (id: string, database: string, oldName: string, newName: string): Promise<{ success: boolean; message: string }> => {
+  renameTable: async (id: string, database: string, oldName: string, newName: string, governanceOptions?: GovernanceApprovalRequest): Promise<GovernedMutationResult> => {
     const electronAPI = getElectronAPI()
-    if (!electronAPI) return { success: false, message: 'Electron API 不可用' }
+    if (!electronAPI) return normalizeGovernedMutationResult(null, 'Electron API 不可用')
     try {
-      return await electronAPI.renameTable(id, database, oldName, newName)
+      return normalizeGovernedMutationResult(await electronAPI.renameTable(id, database, oldName, newName, governanceOptions), '重命名表失败')
     } catch (e: any) {
-      return { success: false, message: e.toString() }
+      return normalizeGovernedMutationResult({ message: e.toString() }, e.toString())
     }
   },
 
-  duplicateTable: async (id: string, database: string, sourceTable: string, newTable: string, withData = false): Promise<{ success: boolean; message: string }> => {
+  duplicateTable: async (id: string, database: string, sourceTable: string, newTable: string, withData = false, governanceOptions?: GovernanceApprovalRequest): Promise<GovernedMutationResult> => {
     const electronAPI = getElectronAPI()
-    if (!electronAPI) return { success: false, message: 'Electron API 不可用' }
+    if (!electronAPI) return normalizeGovernedMutationResult(null, 'Electron API 不可用')
     try {
-      return await electronAPI.duplicateTable(id, database, sourceTable, newTable, withData)
+      return normalizeGovernedMutationResult(await electronAPI.duplicateTable(id, database, sourceTable, newTable, withData, governanceOptions), '复制表失败')
     } catch (e: any) {
-      return { success: false, message: e.toString() }
+      return normalizeGovernedMutationResult({ message: e.toString() }, e.toString())
     }
   },
 
   // 列管理
-  addColumn: async (id: string, database: string, tableName: string, column: any): Promise<{ success: boolean; message: string }> => {
+  addColumn: async (id: string, database: string, tableName: string, column: any, governanceOptions?: GovernanceApprovalRequest): Promise<GovernedMutationResult> => {
     const electronAPI = getElectronAPI()
-    if (!electronAPI) return { success: false, message: 'Electron API 不可用' }
+    if (!electronAPI) return normalizeGovernedMutationResult(null, 'Electron API 不可用')
     try {
-      return await electronAPI.addColumn(id, database, tableName, column)
+      return normalizeGovernedMutationResult(await electronAPI.addColumn(id, database, tableName, column, governanceOptions), '新增列失败')
     } catch (e: any) {
-      return { success: false, message: e.toString() }
+      return normalizeGovernedMutationResult({ message: e.toString() }, e.toString())
     }
   },
 
-  modifyColumn: async (id: string, database: string, tableName: string, oldName: string, column: any): Promise<{ success: boolean; message: string }> => {
+  modifyColumn: async (id: string, database: string, tableName: string, oldName: string, column: any, governanceOptions?: GovernanceApprovalRequest): Promise<GovernedMutationResult> => {
     const electronAPI = getElectronAPI()
-    if (!electronAPI) return { success: false, message: 'Electron API 不可用' }
+    if (!electronAPI) return normalizeGovernedMutationResult(null, 'Electron API 不可用')
     try {
-      return await electronAPI.modifyColumn(id, database, tableName, oldName, column)
+      return normalizeGovernedMutationResult(await electronAPI.modifyColumn(id, database, tableName, oldName, column, governanceOptions), '修改列失败')
     } catch (e: any) {
-      return { success: false, message: e.toString() }
+      return normalizeGovernedMutationResult({ message: e.toString() }, e.toString())
     }
   },
 
-  dropColumn: async (id: string, database: string, tableName: string, columnName: string): Promise<{ success: boolean; message: string }> => {
+  dropColumn: async (id: string, database: string, tableName: string, columnName: string, governanceOptions?: GovernanceApprovalRequest): Promise<GovernedMutationResult> => {
     const electronAPI = getElectronAPI()
-    if (!electronAPI) return { success: false, message: 'Electron API 不可用' }
+    if (!electronAPI) return normalizeGovernedMutationResult(null, 'Electron API 不可用')
     try {
-      return await electronAPI.dropColumn(id, database, tableName, columnName)
+      return normalizeGovernedMutationResult(await electronAPI.dropColumn(id, database, tableName, columnName, governanceOptions), '删除列失败')
     } catch (e: any) {
-      return { success: false, message: e.toString() }
+      return normalizeGovernedMutationResult({ message: e.toString() }, e.toString())
     }
   },
 
@@ -563,11 +598,11 @@ const api = {
     }
   },
 
-  executeMultiSQL: async (id: string, sqls: string): Promise<{ success: boolean; message: string }> => {
+  executeMultiSQL: async (id: string, sqls: string, governanceOptions?: GovernanceApprovalRequest): Promise<{ success: boolean; message: string; governance?: GovernanceExecutionInfo }> => {
     const electronAPI = getElectronAPI()
     if (!electronAPI) return { success: false, message: 'Electron API 不可用' }
     try {
-      return await electronAPI.executeMultiSQL(id, sqls)
+      return await electronAPI.executeMultiSQL(id, sqls, governanceOptions)
     } catch (e: any) {
       return { success: false, message: e.toString() }
     }
@@ -593,6 +628,70 @@ const api = {
     } catch (e) {
       console.error('loadConnections error:', e)
       return []
+    }
+  },
+
+  loadGovernanceConfig: async (): Promise<GovernanceConfig | null> => {
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) return null
+    try {
+      return await electronAPI.loadGovernanceConfig()
+    } catch (e) {
+      console.error('loadGovernanceConfig error:', e)
+      return null
+    }
+  },
+
+  saveGovernanceConfig: async (config: GovernanceConfig): Promise<{ success: boolean; message?: string }> => {
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) return { success: false, message: 'Electron API 涓嶅彲鐢?' }
+    try {
+      return await electronAPI.saveGovernanceConfig(config)
+    } catch (e: any) {
+      return { success: false, message: e.toString() }
+    }
+  },
+
+  listAuditLogs: async (filters?: GovernanceLogFilters): Promise<GovernanceAuditRecord[]> => {
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) return []
+    try {
+      return await electronAPI.listAuditLogs(filters)
+    } catch (e) {
+      console.error('listAuditLogs error:', e)
+      return []
+    }
+  },
+
+  listFlashbackLogs: async (filters?: GovernanceLogFilters): Promise<GovernanceFlashbackRecord[]> => {
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) return []
+    try {
+      return await electronAPI.listFlashbackLogs(filters)
+    } catch (e) {
+      console.error('listFlashbackLogs error:', e)
+      return []
+    }
+  },
+
+  getFlashbackRecord: async (id: string): Promise<GovernanceFlashbackRecord | null> => {
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) return null
+    try {
+      return await electronAPI.getFlashbackRecord(id)
+    } catch (e) {
+      console.error('getFlashbackRecord error:', e)
+      return null
+    }
+  },
+
+  approveGovernanceDecision: async (approval: GovernanceApprovalRequest): Promise<GovernanceApprovalResponse> => {
+    const electronAPI = getElectronAPI()
+    if (!electronAPI) return { success: false, approved: false, message: 'Electron API 涓嶅彲鐢?' }
+    try {
+      return await electronAPI.approveGovernanceDecision(approval)
+    } catch (e: any) {
+      return { success: false, approved: false, message: e.toString() }
     }
   },
   

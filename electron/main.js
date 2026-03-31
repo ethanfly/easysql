@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron'
+﻿import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
@@ -12,34 +12,89 @@ import Redis from 'ioredis'
 import mssql from 'mssql'
 import Blowfish from 'blowfish-node'
 import { Client as SSHClient } from 'ssh2'
+import {
+  DEFAULT_GOVERNANCE_CONFIG,
+  appendAuditRecord,
+  appendFlashbackRecord,
+  applyMaskingToResult,
+  buildAuditRecord,
+  buildRawSqlFlashback,
+  createGovernanceRuntime,
+  evaluateRawSqlOperation,
+  evaluateStructuredOperation,
+} from './governance/index.js'
+import { splitSqlStatements } from './governance/sql-classifier.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-// 存储活动的数据库连接
+// 瀛樺偍娲诲姩鐨勬暟鎹簱杩炴帴
 const connections = new Map()
-// 存储活动的 SSH 隧道
+// 瀛樺偍娲诲姩鐨?SSH 闅ч亾
 const sshTunnels = new Map()
-// 配置文件路径
+// 閰嶇疆鏂囦欢璺緞
 const configPath = path.join(app.getPath('userData'), 'connections.json')
-// SQL.js 初始化
+const governanceConfigPath = path.join(app.getPath('userData'), 'governance.json')
+// SQL.js 鍒濆鍖?
 let SQL = null
+let governanceRuntime = null
 
-// ============ SSH 隧道管理 ============
+function ensureGovernanceRuntime() {
+  if (!governanceRuntime) {
+    governanceRuntime = createGovernanceRuntime({
+      baseDir: app.getPath('userData'),
+      userDataPath: app.getPath('userData'),
+      appVersion: app.getVersion(),
+      config: loadGovernanceConfig(),
+    })
+  }
+
+  return governanceRuntime
+}
+
+function loadGovernanceConfig() {
+  try {
+    if (!fs.existsSync(governanceConfigPath)) {
+      return { ...DEFAULT_GOVERNANCE_CONFIG }
+    }
+
+    const data = fs.readFileSync(governanceConfigPath, 'utf-8')
+    return {
+      ...DEFAULT_GOVERNANCE_CONFIG,
+      ...JSON.parse(data),
+    }
+  } catch (error) {
+    console.error('[Governance] Failed to load config:', error.message)
+    return { ...DEFAULT_GOVERNANCE_CONFIG }
+  }
+}
+
+function saveGovernanceConfig(config) {
+  const nextConfig = {
+    ...DEFAULT_GOVERNANCE_CONFIG,
+    ...(config || {}),
+  }
+
+  fs.writeFileSync(governanceConfigPath, JSON.stringify(nextConfig, null, 2))
+  ensureGovernanceRuntime().setConfig(nextConfig)
+  return nextConfig
+}
+
+// ============ SSH 闅ч亾绠＄悊 ============
 
 /**
- * 查找可用端口
+ * 鏌ユ壘鍙敤绔彛
  */
 function findAvailablePort(startPort = 49152) {
   return new Promise((resolve, reject) => {
     const server = net.createServer()
     server.unref()
     server.on('error', () => {
-      // 端口被占用，尝试下一个
+      // 绔彛琚崰鐢紝灏濊瘯涓嬩竴涓?
       if (startPort < 65535) {
         resolve(findAvailablePort(startPort + 1))
       } else {
-        reject(new Error('没有可用端口'))
+        reject(new Error('娌℃湁鍙敤绔彛'))
       }
     })
     server.listen(startPort, '127.0.0.1', () => {
@@ -49,14 +104,14 @@ function findAvailablePort(startPort = 49152) {
 }
 
 /**
- * 创建 SSH 隧道
- * @param {Object} config - 连接配置
+ * 鍒涘缓 SSH 闅ч亾
+ * @param {Object} config - 杩炴帴閰嶇疆
  * @returns {Promise<{ssh, server, localPort, localHost}>}
  */
 async function createSSHTunnel(config) {
-  // 先找一个可用端口
+  // 鍏堟壘涓€涓彲鐢ㄧ鍙?
   const localPort = await findAvailablePort()
-  console.log(`[SSH] 使用本地端口: ${localPort}`)
+  console.log(`[SSH] 浣跨敤鏈湴绔彛: ${localPort}`)
   
   return new Promise((resolve, reject) => {
     const ssh = new SSHClient()
@@ -64,17 +119,17 @@ async function createSSHTunnel(config) {
     let connected = false
     
     ssh.on('ready', () => {
-      console.log(`[SSH] 连接成功: ${config.sshUser}@${config.sshHost}:${config.sshPort}`)
+      console.log(`[SSH] 杩炴帴鎴愬姛: ${config.sshUser}@${config.sshHost}:${config.sshPort}`)
       connected = true
       
-      // 创建本地 TCP 服务器进行端口转发
+      // 鍒涘缓鏈湴 TCP 鏈嶅姟鍣ㄨ繘琛岀鍙ｈ浆鍙?
       server = net.createServer((socket) => {
         ssh.forwardOut(
           '127.0.0.1', localPort,
           config.host, config.port,
           (err, stream) => {
             if (err) {
-              console.error('[SSH] 转发失败:', err.message)
+              console.error('[SSH] 杞彂澶辫触:', err.message)
               socket.end()
               return
             }
@@ -84,28 +139,28 @@ async function createSSHTunnel(config) {
       })
       
       server.listen(localPort, '127.0.0.1', () => {
-        console.log(`[SSH] 隧道就绪: localhost:${localPort} → ${config.host}:${config.port}`)
+        console.log(`[SSH] 闅ч亾灏辩华: localhost:${localPort} 鈫?${config.host}:${config.port}`)
         resolve({ ssh, server, localPort, localHost: '127.0.0.1' })
       })
       
       server.on('error', (err) => {
-        console.error('[SSH] 本地服务器错误:', err.message)
+        console.error('[SSH] 鏈湴鏈嶅姟鍣ㄩ敊璇?', err.message)
         ssh.end()
         reject(err)
       })
     })
     
     ssh.on('error', (err) => {
-      console.error('[SSH] 连接错误:', err.message)
-      if (!connected) reject(new Error(`SSH 连接失败: ${err.message}`))
+      console.error('[SSH] 杩炴帴閿欒:', err.message)
+      if (!connected) reject(new Error(`SSH 杩炴帴澶辫触: ${err.message}`))
     })
     
     ssh.on('close', () => {
-      console.log('[SSH] 连接已关闭')
+      console.log('[SSH] connection closed')
       if (server) server.close()
     })
     
-    // 构建 SSH 配置
+    // 鏋勫缓 SSH 閰嶇疆
     const sshConfig = {
       host: config.sshHost,
       port: config.sshPort || 22,
@@ -114,12 +169,12 @@ async function createSSHTunnel(config) {
       keepaliveInterval: 10000,
     }
     
-    // 密码认证
+    // 瀵嗙爜璁よ瘉
     if (config.sshPassword) {
       sshConfig.password = config.sshPassword
     }
     
-    // 私钥认证
+    // 绉侀挜璁よ瘉
     if (config.sshKey) {
       try {
         if (fs.existsSync(config.sshKey)) {
@@ -128,17 +183,17 @@ async function createSSHTunnel(config) {
           sshConfig.privateKey = config.sshKey
         }
       } catch (e) {
-        console.warn('[SSH] 读取私钥失败:', e.message)
+        console.warn('[SSH] 璇诲彇绉侀挜澶辫触:', e.message)
       }
     }
     
-    console.log(`[SSH] 正在连接: ${config.sshUser}@${config.sshHost}:${config.sshPort}`)
+    console.log(`[SSH] 姝ｅ湪杩炴帴: ${config.sshUser}@${config.sshHost}:${config.sshPort}`)
     ssh.connect(sshConfig)
   })
 }
 
 /**
- * 关闭 SSH 隧道
+ * 鍏抽棴 SSH 闅ч亾
  */
 function closeSSHTunnel(tunnelId) {
   const tunnel = sshTunnels.get(tunnelId)
@@ -146,9 +201,9 @@ function closeSSHTunnel(tunnelId) {
     try {
       if (tunnel.server) tunnel.server.close()
       if (tunnel.ssh) tunnel.ssh.end()
-      console.log(`[SSH] 隧道已关闭: ${tunnelId}`)
+      console.log(`[SSH] 闅ч亾宸插叧闂? ${tunnelId}`)
     } catch (e) {
-      console.error('[SSH] 关闭隧道失败:', e.message)
+      console.error('[SSH] 鍏抽棴闅ч亾澶辫触:', e.message)
     }
     sshTunnels.delete(tunnelId)
   }
@@ -164,10 +219,10 @@ async function initSqlite() {
 }
 
 function createWindow() {
-  // 判断是否为开发模式（检查是否有 Vite 开发服务器运行）
+  // 鍒ゆ柇鏄惁涓哄紑鍙戞ā寮忥紙妫€鏌ユ槸鍚︽湁 Vite 寮€鍙戞湇鍔″櫒杩愯锛?
   const isDev = !app.isPackaged
   
-  // 图标路径（开发和生产环境不同）
+  // 鍥炬爣璺緞锛堝紑鍙戝拰鐢熶骇鐜涓嶅悓锛?
   const iconPath = isDev
     ? path.join(__dirname, '../public/icon.png')
     : path.join(__dirname, '../dist/icon.png')
@@ -178,9 +233,9 @@ function createWindow() {
     minWidth: 1000,
     minHeight: 700,
     frame: false,
-    backgroundColor: '#f8fafc', // 浅色主题背景色
+    backgroundColor: '#f8fafc', // 娴呰壊涓婚鑳屾櫙鑹?
     icon: iconPath,
-    show: false, // 先隐藏窗口，等加载完成再显示
+    show: false, // 鍏堥殣钘忕獥鍙ｏ紝绛夊姞杞藉畬鎴愬啀鏄剧ず
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -188,17 +243,17 @@ function createWindow() {
     }
   })
 
-  // 窗口准备好后再显示，避免白屏/黑屏闪烁
+  // 绐楀彛鍑嗗濂藉悗鍐嶆樉绀猴紝閬垮厤鐧藉睆/榛戝睆闂儊
   mainWindow.once('ready-to-show', () => {
     mainWindow.show()
   })
 
-  // 开发模式下加载 Vite 开发服务器
+  // 寮€鍙戞ā寮忎笅鍔犺浇 Vite 寮€鍙戞湇鍔″櫒
   if (isDev) {
     mainWindow.loadURL('http://localhost:5173')
     // mainWindow.webContents.openDevTools()
   } else {
-    // 生产模式加载打包后的文件
+    // 鐢熶骇妯″紡鍔犺浇鎵撳寘鍚庣殑鏂囦欢
     const indexPath = path.join(__dirname, '../dist/index.html')
     console.log('Loading:', indexPath)
     mainWindow.loadFile(indexPath).catch(err => {
@@ -206,7 +261,7 @@ function createWindow() {
     })
   }
   
-  // 加载失败时的错误处理
+  // 鍔犺浇澶辫触鏃剁殑閿欒澶勭悊
   mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
     console.error('Page failed to load:', errorCode, errorDescription)
   })
@@ -224,17 +279,17 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  // 关闭所有数据库连接和 SSH 隧道
+  // 鍏抽棴鎵€鏈夋暟鎹簱杩炴帴鍜?SSH 闅ч亾
   for (const [id, connInfo] of connections) {
     try {
       closeConnection(connInfo.connection, connInfo.type, id)
     } catch (e) {
-      console.error('关闭连接失败:', e)
+      console.error('鍏抽棴杩炴帴澶辫触:', e)
     }
   }
   connections.clear()
   
-  // 清理残留的 SSH 隧道
+  // 娓呯悊娈嬬暀鐨?SSH 闅ч亾
   for (const [id, tunnel] of sshTunnels) {
     try {
       if (tunnel.server) tunnel.server.close()
@@ -248,7 +303,7 @@ app.on('window-all-closed', () => {
   }
 })
 
-// ============ 窗口控制 ============
+// ============ 绐楀彛鎺у埗 ============
 ipcMain.handle('window:minimize', () => {
   mainWindow?.minimize()
 })
@@ -265,7 +320,7 @@ ipcMain.handle('window:close', () => {
   mainWindow?.close()
 })
 
-// ============ 配置存储 ============
+// ============ 閰嶇疆瀛樺偍 ============
 ipcMain.handle('config:load', async () => {
   try {
     if (fs.existsSync(configPath)) {
@@ -274,7 +329,7 @@ ipcMain.handle('config:load', async () => {
     }
     return []
   } catch (e) {
-    console.error('加载配置失败:', e)
+    console.error('鍔犺浇閰嶇疆澶辫触:', e)
     return []
   }
 })
@@ -284,17 +339,46 @@ ipcMain.handle('config:save', async (event, connectionsList) => {
     fs.writeFileSync(configPath, JSON.stringify(connectionsList, null, 2))
     return { success: true }
   } catch (e) {
-    console.error('保存配置失败:', e)
+    console.error('淇濆瓨閰嶇疆澶辫触:', e)
     return { success: false, message: e.message }
   }
 })
 
-// ============ 数据库操作 ============
+ipcMain.handle('governance:loadConfig', async () => {
+  return loadGovernanceConfig()
+})
+
+ipcMain.handle('governance:saveConfig', async (event, config) => {
+  try {
+    saveGovernanceConfig(config)
+    return { success: true }
+  } catch (error) {
+    return { success: false, message: error.message }
+  }
+})
+
+ipcMain.handle('governance:listAuditLogs', async (event, filters = {}) => {
+  return ensureGovernanceRuntime().listAuditRecords(filters)
+})
+
+ipcMain.handle('governance:listFlashbackLogs', async (event, filters = {}) => {
+  return ensureGovernanceRuntime().listFlashbackRecords(filters)
+})
+
+ipcMain.handle('governance:getFlashbackRecord', async (event, flashbackId) => {
+  return ensureGovernanceRuntime().getFlashbackRecord(flashbackId)
+})
+
+ipcMain.handle('governance:approveDecision', async (event, approval) => {
+  return ensureGovernanceRuntime().approveDecision(approval)
+})
+
+// ============ 鏁版嵁搴撴搷浣?============
 ipcMain.handle('db:test', async (event, config) => {
   try {
     const conn = await createConnection(config, null)
     await closeConnection(conn, config.type, null)
-    const msg = config.sshEnabled ? '通过 SSH 隧道连接成功' : '连接成功'
+    const msg = config.sshEnabled ? '閫氳繃 SSH 闅ч亾杩炴帴鎴愬姛' : '杩炴帴鎴愬姛'
     return { success: true, message: msg }
   } catch (e) {
     return { success: false, message: e.message }
@@ -305,7 +389,7 @@ ipcMain.handle('db:connect', async (event, config) => {
   try {
     const conn = await createConnection(config, config.id)
     connections.set(config.id, { connection: conn, type: config.type, config })
-    const msg = config.sshEnabled ? '通过 SSH 隧道连接成功' : '连接成功'
+    const msg = config.sshEnabled ? '閫氳繃 SSH 闅ч亾杩炴帴鎴愬姛' : '杩炴帴鎴愬姛'
     return { success: true, message: msg }
   } catch (e) {
     return { success: false, message: e.message }
@@ -320,7 +404,7 @@ ipcMain.handle('db:disconnect', async (event, id) => {
   }
 })
 
-// 检查连接是否有效
+// 妫€鏌ヨ繛鎺ユ槸鍚︽湁鏁?
 async function isConnectionAlive(conn, type) {
   try {
     switch (type) {
@@ -348,24 +432,24 @@ async function isConnectionAlive(conn, type) {
         return true
     }
   } catch (e) {
-    console.log('连接检测失败:', e.message)
+    console.log('杩炴帴妫€娴嬪け璐?', e.message)
     return false
   }
 }
 
-// 确保连接有效，如果断开则自动重连
+// 纭繚杩炴帴鏈夋晥锛屽鏋滄柇寮€鍒欒嚜鍔ㄩ噸杩?
 async function ensureConnection(id, skipAliveCheck = false) {
   const connInfo = connections.get(id)
   if (!connInfo) {
-    console.log(`[Connection] 连接不存在: id=${id}`)
+    console.log(`[Connection] 杩炴帴涓嶅瓨鍦? id=${id}`)
     return null
   }
 
-  // 检查 SSH 隧道是否有效（仅当启用 SSH 时）
+  // 妫€鏌?SSH 闅ч亾鏄惁鏈夋晥锛堜粎褰撳惎鐢?SSH 鏃讹級
   if (connInfo.config?.sshEnabled) {
     const tunnel = sshTunnels.get(id)
     if (!tunnel || !tunnel.ssh) {
-      console.log(`[Connection] SSH 隧道已失效，重新创建...`)
+      console.log(`[Connection] SSH 闅ч亾宸插け鏁堬紝閲嶆柊鍒涘缓...`)
       try {
         await closeConnection(connInfo.connection, connInfo.type, id)
       } catch (e) {}
@@ -373,33 +457,33 @@ async function ensureConnection(id, skipAliveCheck = false) {
       try {
         const newConn = await createConnection(connInfo.config, id)
         connections.set(id, { connection: newConn, type: connInfo.type, config: connInfo.config })
-        console.log(`[Connection] SSH 隧道重建成功`)
+        console.log(`[Connection] SSH 闅ч亾閲嶅缓鎴愬姛`)
         return connections.get(id)
       } catch (e) {
-        console.error(`[Connection] SSH 隧道重建失败:`, e.message)
+        console.error(`[Connection] SSH 闅ч亾閲嶅缓澶辫触:`, e.message)
         connections.delete(id)
         return null
       }
     }
   }
 
-  // 连接池类型（MySQL/PostgreSQL）自动管理连接，跳过 alive 检查
-  // 只有在查询真正失败时才需要重连
+  // 杩炴帴姹犵被鍨嬶紙MySQL/PostgreSQL锛夎嚜鍔ㄧ鐞嗚繛鎺ワ紝璺宠繃 alive 妫€鏌?
+  // 鍙湁鍦ㄦ煡璇㈢湡姝ｅけ璐ユ椂鎵嶉渶瑕侀噸杩?
   if (skipAliveCheck) {
     return connInfo
   }
 
-  // 非连接池类型才需要检查连接状态
+  // 闈炶繛鎺ユ睜绫诲瀷鎵嶉渶瑕佹鏌ヨ繛鎺ョ姸鎬?
   const poolTypes = ['mysql', 'mariadb', 'postgresql', 'postgres']
   if (poolTypes.includes(connInfo.type)) {
-    return connInfo  // 连接池自动管理，直接返回
+    return connInfo  // 杩炴帴姹犺嚜鍔ㄧ鐞嗭紝鐩存帴杩斿洖
   }
 
-  // 其他类型检查连接是否有效
+  // 鍏朵粬绫诲瀷妫€鏌ヨ繛鎺ユ槸鍚︽湁鏁?
   const alive = await isConnectionAlive(connInfo.connection, connInfo.type)
   
   if (!alive && connInfo.config) {
-    console.log(`[Connection] 连接已断开，尝试重新连接: id=${id}`)
+    console.log(`[Connection] 杩炴帴宸叉柇寮€锛屽皾璇曢噸鏂拌繛鎺? id=${id}`)
     try {
       try {
         await closeConnection(connInfo.connection, connInfo.type, id)
@@ -407,10 +491,10 @@ async function ensureConnection(id, skipAliveCheck = false) {
       
       const newConn = await createConnection(connInfo.config, id)
       connections.set(id, { connection: newConn, type: connInfo.type, config: connInfo.config })
-      console.log(`[Connection] 重新连接成功`)
+      console.log(`[Connection] 閲嶆柊杩炴帴鎴愬姛`)
       return connections.get(id)
     } catch (e) {
-      console.error(`[Connection] 重新连接失败:`, e.message)
+      console.error(`[Connection] 閲嶆柊杩炴帴澶辫触:`, e.message)
       connections.delete(id)
       return null
     }
@@ -419,34 +503,400 @@ async function ensureConnection(id, skipAliveCheck = false) {
   return connInfo
 }
 
-ipcMain.handle('db:query', async (event, id, sql) => {
-  console.log(`[Query] 执行查询: id=${id}, sql=${sql.substring(0, 100)}...`)
+function getConnectionDisplayName(id, connInfo) {
+  return connInfo?.config?.name || connInfo?.config?.connectionName || id
+}
+
+function getConnectionDatabaseName(connInfo, fallback = null) {
+  return fallback || connInfo?.config?.database || connInfo?.config?.db || null
+}
+
+async function appendGovernanceAudit(input) {
+  try {
+    const record = buildAuditRecord(input)
+    await appendAuditRecord({
+      runtime: input.runtime,
+      config: input.config,
+      record,
+    })
+    return record
+  } catch (error) {
+    console.error('[Governance] Audit append failed:', error.message)
+    return null
+  }
+}
+
+async function appendGovernanceFlashback(input) {
+  try {
+    return await appendFlashbackRecord(input)
+  } catch (error) {
+    console.error('[Governance] Flashback append failed:', error.message)
+    return { ok: false, error }
+  }
+}
+
+function buildGovernanceResponseError(message, governance) {
+  return {
+    columns: [],
+    rows: [],
+    error: message,
+    governance,
+  }
+}
+
+function buildMutationGovernanceError(message, governance) {
+  return {
+    success: false,
+    message,
+    governance,
+  }
+}
+
+function buildStructuredGovernancePayload(evaluation, extra = {}) {
+  return {
+    classification: extra.classification ?? null,
+    statementType: extra.statementType ?? null,
+    isMultiStatement: false,
+    classifierNotes: extra.classifierNotes ?? [],
+    riskLevel: evaluation?.riskLevel ?? null,
+    decision: evaluation?.decision?.decision ?? null,
+    highRiskReasons: extra.highRiskReasons ?? [],
+    decisionNotes: evaluation?.decision?.notes ?? [],
+    approvalRequest: extra.approvalRequest ?? null,
+  }
+}
+
+function deriveStructuredRiskLevel(statementType, options = {}) {
+  const normalizedType = String(statementType || '').toUpperCase()
+  if (options.highRisk === true) {
+    return 'high'
+  }
+
+  if (['DROP_DATABASE', 'DROP_TABLE', 'TRUNCATE_TABLE', 'DROP_COLUMN'].includes(normalizedType)) {
+    return 'high'
+  }
+
+  if (['ROW_DELETE', 'ROW_UPDATE', 'ROW_INSERT', 'CREATE_TABLE', 'RENAME_TABLE', 'DUPLICATE_TABLE', 'ADD_COLUMN', 'MODIFY_COLUMN'].includes(normalizedType)) {
+    return 'medium'
+  }
+
+  return 'low'
+}
+
+async function enforceStructuredGovernance(input) {
+  const runtime = input.runtime ?? ensureGovernanceRuntime()
+  const riskLevel = deriveStructuredRiskLevel(input.statementType, input)
+  const evaluation = evaluateStructuredOperation({
+    config: runtime.getConfig(),
+    connectionId: input.connectionId,
+    source: input.source,
+    operationKind: input.operationKind,
+    classification: input.classification,
+    statementType: input.statementType,
+    sqlText: input.sqlText,
+    tableName: input.tableName,
+    riskLevel,
+  })
+  const baseGovernance = buildStructuredGovernancePayload(evaluation, {
+    classification: input.classification,
+    statementType: input.statementType,
+    highRiskReasons: Array.isArray(input.highRiskReasons)
+      ? input.highRiskReasons
+      : (riskLevel === 'high' ? [String(input.statementType || '').toLowerCase().replace(/_/g, '-')] : []),
+  })
+
+  if (evaluation.decision?.decision === 'allow') {
+    return {
+      blocked: false,
+      runtime,
+      evaluation,
+      governance: baseGovernance,
+      riskLevel,
+      approvedByUser: false,
+      decision: 'allow',
+      decisionNotes: evaluation.decision?.notes ?? [],
+    }
+  }
+
+  if (evaluation.decision?.decision === 'confirm') {
+    const approval = runtime.resolveApproval({
+      approval: input.approval,
+      connectionId: input.connectionId,
+      source: input.source,
+      operationHash: evaluation.operationHash,
+    })
+
+    if (approval.ok && approval.state === 'approved') {
+      const decisionNotes = [...(evaluation.decision?.notes ?? []), 'approval-consumed']
+      return {
+        blocked: false,
+        runtime,
+        evaluation,
+        governance: {
+          ...baseGovernance,
+          decision: 'allow',
+          decisionNotes,
+          approvalRequest: null,
+        },
+        riskLevel,
+        approvedByUser: true,
+        decision: 'allow',
+        decisionNotes,
+      }
+    }
+
+    if (approval.ok && approval.state === 'pending') {
+      return {
+        blocked: true,
+        runtime,
+        evaluation,
+        governance: {
+          ...baseGovernance,
+          approvalRequest: approval.approval,
+        },
+        riskLevel,
+        response: buildMutationGovernanceError('Governance confirmation required', {
+          ...baseGovernance,
+          approvalRequest: approval.approval,
+        }),
+      }
+    }
+
+    await recordGovernedMutation({
+      runtime,
+      operationKind: input.operationKind,
+      source: input.source,
+      connectionId: input.connectionId,
+      connectionName: input.connectionName,
+      databaseType: input.databaseType,
+      databaseName: input.databaseName,
+      tableName: input.tableName,
+      primaryKey: input.primaryKey,
+      classification: input.classification,
+      statementType: input.statementType,
+      riskLevel,
+      success: false,
+      error: new Error('Governance approval could not be issued'),
+      durationMs: Date.now() - input.startedAt,
+      decision: 'block',
+      highRiskReasons: baseGovernance.highRiskReasons,
+      decisionNotes: [...(evaluation.decision?.notes ?? []), 'approval-store-error'],
+      flashbackReasonCodes: input.flashbackReasonCodes,
+    })
+
+    return {
+      blocked: true,
+      runtime,
+      evaluation,
+      governance: {
+        ...baseGovernance,
+        decision: 'block',
+        decisionNotes: [...(evaluation.decision?.notes ?? []), 'approval-store-error'],
+      },
+      riskLevel,
+      response: buildMutationGovernanceError('Governance approval could not be issued', {
+        ...baseGovernance,
+        decision: 'block',
+        decisionNotes: [...(evaluation.decision?.notes ?? []), 'approval-store-error'],
+      }),
+    }
+  }
+
+  await recordGovernedMutation({
+    runtime,
+    operationKind: input.operationKind,
+    source: input.source,
+    connectionId: input.connectionId,
+    connectionName: input.connectionName,
+    databaseType: input.databaseType,
+    databaseName: input.databaseName,
+    tableName: input.tableName,
+    primaryKey: input.primaryKey,
+    classification: input.classification,
+    statementType: input.statementType,
+    riskLevel,
+    success: false,
+    error: new Error('Governance blocked operation'),
+    durationMs: Date.now() - input.startedAt,
+    decision: evaluation.decision?.decision,
+    highRiskReasons: baseGovernance.highRiskReasons,
+    decisionNotes: evaluation.decision?.notes ?? [],
+    flashbackReasonCodes: input.flashbackReasonCodes,
+  })
+
+  return {
+    blocked: true,
+    runtime,
+    evaluation,
+    governance: baseGovernance,
+    riskLevel,
+    response: buildMutationGovernanceError('Governance blocked operation', baseGovernance),
+  }
+}
+
+function isRetryableConnectionError(error) {
+  const message = error?.message || ''
+  return message.includes('closed') || message.includes('ECONNRESET') || message.includes('ETIMEDOUT')
+}
+
+async function recordGovernedMutation(input) {
+  const runtime = input.runtime ?? ensureGovernanceRuntime()
+  const record = await runtime.recordMutationOperation({
+    operationKind: input.operationKind,
+    source: input.source,
+    connectionId: input.connectionId,
+    connectionName: input.connectionName,
+    databaseType: input.databaseType,
+    databaseName: input.databaseName,
+    tableName: input.tableName,
+    primaryKey: input.primaryKey,
+    classification: input.classification,
+    statementType: input.statementType,
+    riskLevel: input.riskLevel,
+    decision: input.decision ?? 'allow',
+    approvedByUser: input.approvedByUser === true,
+    sqlText: input.sqlText ?? null,
+    success: input.success === true,
+    affectedRows: input.affectedRows,
+    error: input.error,
+    durationMs: input.durationMs,
+    flashback: input.flashback,
+    flashbackReasonCodes: input.flashbackReasonCodes,
+    highRiskReasons: input.highRiskReasons,
+    classifierNotes: input.classifierNotes,
+    decisionNotes: input.decisionNotes,
+  })
+
+  return record
+}
+
+async function getRowObjectByPrimaryKey(conn, type, database, table, primaryKey) {
+  if (!primaryKey?.column) {
+    return null
+  }
+
+  switch (type) {
+    case 'mysql':
+    case 'mariadb': {
+      const [rows] = await conn.query(
+        `SELECT * FROM \`${database}\`.\`${table}\` WHERE \`${primaryKey.column}\` = ? LIMIT 1`,
+        [primaryKey.value]
+      )
+      return rows[0] || null
+    }
+    case 'postgresql':
+    case 'postgres': {
+      const result = await conn.query(
+        `SELECT * FROM "${table}" WHERE "${primaryKey.column}" = $1 LIMIT 1`,
+        [primaryKey.value]
+      )
+      return result.rows[0] || null
+    }
+    case 'sqlite': {
+      const stmt = conn.prepare(`SELECT * FROM "${table}" WHERE "${primaryKey.column}" = ? LIMIT 1`)
+      stmt.bind([primaryKey.value])
+      let row = null
+      if (stmt.step()) {
+        row = stmt.getAsObject()
+      }
+      stmt.free()
+      return row
+    }
+    case 'sqlserver': {
+      const request = conn.request()
+      request.input('pk', primaryKey.value)
+      const result = await request.query(`SELECT TOP 1 * FROM [${table}] WHERE [${primaryKey.column}] = @pk`)
+      return result.recordset?.[0] || null
+    }
+    case 'mongodb': {
+      const db = conn.db(database)
+      const { ObjectId } = await import('mongodb')
+      const filter = primaryKey.column === '_id'
+        ? { _id: new ObjectId(primaryKey.value) }
+        : { [primaryKey.column]: primaryKey.value }
+      return db.collection(table).findOne(filter)
+    }
+    case 'redis': {
+      await conn.select(parseInt(database) || 0)
+      const value = await conn.get(primaryKey.value)
+      if (value === null || value === undefined) {
+        return null
+      }
+      return {
+        [primaryKey.column]: primaryKey.value,
+        value,
+      }
+    }
+    default:
+      return null
+  }
+}
+
+ipcMain.handle('db:query', async (event, id, sql, governanceOptions = {}) => {
+  console.log('[Query] execute id=' + id)
   const connInfo = await ensureConnection(id)
   if (!connInfo) {
-    console.error(`[Query] 连接不存在: id=${id}`)
+    console.error('[Query] missing connection id=' + id)
     return { columns: [], rows: [], error: '连接不存在或已断开，请重新连接' }
   }
 
-  console.log(`[Query] 连接有效: type=${connInfo.type}, hasSSH=${!!connInfo.config?.sshEnabled}`)
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+  const databaseName = getConnectionDatabaseName(connInfo)
+  const governance = await runtime.beginRawSqlOperation({
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName,
+    source: 'sql-editor',
+    sqlText: sql,
+    approval: governanceOptions,
+  })
+
+  if (!governance.allowExecution) {
+    return governance.response
+  }
+
   try {
     const result = await executeQuery(connInfo.connection, connInfo.type, sql)
-    console.log(`[Query] 查询成功: columns=${result.columns?.length}, rows=${result.rows?.length}`)
-    return result
-  } catch (e) {
-    console.error(`[Query] 查询失败:`, e.message)
-    // 如果是连接错误，尝试重连后再执行一次
-    if (e.message.includes('closed') || e.message.includes('ECONNRESET') || e.message.includes('ETIMEDOUT')) {
-      console.log(`[Query] 尝试重连...`)
+    const completed = await runtime.completeRawSqlOperation({
+      auditRecord: governance.auditRecord,
+      result,
+      durationMs: Date.now() - startedAt,
+    })
+    return completed.result
+  } catch (error) {
+    console.error('[Query] failed:', error.message)
+    if (isRetryableConnectionError(error)) {
+      console.log('[Query] retrying after reconnect')
       const newConnInfo = await ensureConnection(id)
       if (newConnInfo) {
         try {
-          return await executeQuery(newConnInfo.connection, newConnInfo.type, sql)
-        } catch (e2) {
-          return { columns: [], rows: [], error: e2.message }
+          const retried = await executeQuery(newConnInfo.connection, newConnInfo.type, sql)
+          const completed = await runtime.completeRawSqlOperation({
+            auditRecord: governance.auditRecord,
+            result: retried,
+            durationMs: Date.now() - startedAt,
+          })
+          return completed.result
+        } catch (retryError) {
+          const failed = await runtime.failRawSqlOperation({
+            auditRecord: governance.auditRecord,
+            error: retryError,
+            durationMs: Date.now() - startedAt,
+          })
+          return failed.result
         }
       }
     }
-    return { columns: [], rows: [], error: e.message }
+
+    const failed = await runtime.failRawSqlOperation({
+      auditRecord: governance.auditRecord,
+      error,
+      durationMs: Date.now() - startedAt,
+    })
+    return failed.result
   }
 })
 
@@ -457,25 +907,25 @@ ipcMain.handle('db:getDatabases', async (event, id) => {
   try {
     return await getDatabases(connInfo.connection, connInfo.type)
   } catch (e) {
-    console.error('获取数据库列表失败:', e)
+    console.error('鑾峰彇鏁版嵁搴撳垪琛ㄥけ璐?', e)
     return []
   }
 })
 
 ipcMain.handle('db:getTables', async (event, id, database) => {
-  console.log(`[Tables] 获取表列表: id=${id}, database=${database}`)
+  console.log(`[Tables] 鑾峰彇琛ㄥ垪琛? id=${id}, database=${database}`)
   const connInfo = await ensureConnection(id)
   if (!connInfo) {
-    console.error(`[Tables] 连接不存在: id=${id}`)
+    console.error(`[Tables] 杩炴帴涓嶅瓨鍦? id=${id}`)
     return []
   }
 
   try {
     const tables = await getTables(connInfo.connection, connInfo.type, database)
-    console.log(`[Tables] 获取成功: ${tables.length} 个表`)
+    console.log(`[Tables] 鑾峰彇鎴愬姛: ${tables.length} 涓〃`)
     return tables
   } catch (e) {
-    console.error('[Tables] 获取表列表失败:', e.message)
+    console.error('[Tables] 鑾峰彇琛ㄥ垪琛ㄥけ璐?', e.message)
     return []
   }
 })
@@ -483,79 +933,344 @@ ipcMain.handle('db:getTables', async (event, id, database) => {
 ipcMain.handle('db:getColumns', async (event, id, database, table) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) {
-    console.error(`[Columns] 连接不存在: id=${id}`)
+    console.error(`[Columns] 杩炴帴涓嶅瓨鍦? id=${id}`)
     return []
   }
 
   try {
     return await getColumns(connInfo.connection, connInfo.type, database, table)
   } catch (e) {
-    console.error('[Columns] 获取列信息失败:', e.message)
+    console.error('[Columns] 鑾峰彇鍒椾俊鎭け璐?', e.message)
     return []
   }
 })
 
 ipcMain.handle('db:getTableData', async (event, id, database, table, page, pageSize) => {
-  console.log(`[TableData] 获取表数据: id=${id}, db=${database}, table=${table}, page=${page}`)
+  console.log('[TableData] load id=' + id + ' db=' + database + ' table=' + table)
   const connInfo = await ensureConnection(id)
   if (!connInfo) {
-    console.error(`[TableData] 连接不存在: id=${id}`)
+    console.error('[TableData] missing connection id=' + id)
     return { columns: [], rows: [], total: 0, page, pageSize }
   }
 
-  console.log(`[TableData] 连接有效: type=${connInfo.type}`)
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+
   try {
     const result = await getTableData(connInfo.connection, connInfo.type, database, table, page, pageSize)
-    console.log(`[TableData] 获取成功: columns=${result.columns?.length}, rows=${result.rows?.length}, total=${result.total}`)
-    return result
-  } catch (e) {
-    console.error('[TableData] 获取表数据失败:', e.message)
+    const masked = runtime.applyMaskingToTableData(result)
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'table-browse',
+      source: 'table-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName: table,
+      classification: 'DQL',
+      statementType: 'SELECT',
+      riskLevel: 'low',
+      success: true,
+      affectedRows: masked.rows?.length ?? null,
+      durationMs: Date.now() - startedAt,
+      classifierNotes: ['table-browse'],
+    })
+    return masked
+  } catch (error) {
+    console.error('[TableData] failed:', error.message)
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'table-browse',
+      source: 'table-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName: table,
+      classification: 'DQL',
+      statementType: 'SELECT',
+      riskLevel: 'low',
+      success: false,
+      error,
+      durationMs: Date.now() - startedAt,
+      classifierNotes: ['table-browse'],
+    })
     return { columns: [], rows: [], total: 0, page, pageSize }
   }
 })
 
-ipcMain.handle('db:updateRow', async (event, id, database, table, primaryKey, updates) => {
+ipcMain.handle('db:updateRow', async (event, id, database, table, primaryKey, updates, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { success: false, message: '连接不存在或已断开，请重新连接' }
-
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+  const enforcement = await enforceStructuredGovernance({
+    runtime,
+    startedAt,
+    operationKind: 'row-update',
+    source: 'table-editor',
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName: database,
+    tableName: table,
+    primaryKey,
+    classification: 'DML',
+    statementType: 'ROW_UPDATE',
+    approval: governanceOptions,
+    flashbackReasonCodes: ['flashback-not-supported'],
+  })
+  if (enforcement.blocked) {
+    return enforcement.response
+  }
+  const beforeImage = await getRowObjectByPrimaryKey(connInfo.connection, connInfo.type, database, table, primaryKey)
+  const flashback = beforeImage
+    ? runtime.buildRowUpdateFlashback({
+        databaseName: database,
+        tableName: table,
+        primaryKey: primaryKey.column,
+        beforeImage,
+      })
+    : null
   try {
     await updateRow(connInfo.connection, connInfo.type, database, table, primaryKey, updates)
-    return { success: true, message: '更新成功' }
-  } catch (e) {
-    return { success: false, message: e.message }
+    const auditRecord = await recordGovernedMutation({
+      runtime,
+      operationKind: 'row-update',
+      source: 'table-editor',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName: table,
+      primaryKey,
+      classification: 'DML',
+      statementType: 'UPDATE',
+      riskLevel: enforcement.riskLevel,
+      success: true,
+      affectedRows: 1,
+      durationMs: Date.now() - startedAt,
+      flashback,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+    })
+    return { success: true, message: '更新成功', governance: auditRecord ? { ...enforcement.governance, flashback: auditRecord.flashback } : enforcement.governance }
+  } catch (error) {
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'row-update',
+      source: 'table-editor',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName: table,
+      primaryKey,
+      classification: 'DML',
+      statementType: 'UPDATE',
+      riskLevel: enforcement.riskLevel,
+      success: false,
+      error,
+      durationMs: Date.now() - startedAt,
+      flashback,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+    })
+    return { success: false, message: error.message }
   }
 })
 
-ipcMain.handle('db:deleteRow', async (event, id, database, table, primaryKey) => {
+ipcMain.handle('db:deleteRow', async (event, id, database, table, primaryKey, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { success: false, message: '连接不存在或已断开，请重新连接' }
-
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+  const enforcement = await enforceStructuredGovernance({
+    runtime,
+    startedAt,
+    operationKind: 'row-delete',
+    source: 'table-editor',
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName: database,
+    tableName: table,
+    primaryKey,
+    classification: 'DML',
+    statementType: 'ROW_DELETE',
+    approval: governanceOptions,
+    highRiskReasons: ['row-delete'],
+    flashbackReasonCodes: ['flashback-not-supported'],
+  })
+  if (enforcement.blocked) {
+    return enforcement.response
+  }
+  const beforeImage = await getRowObjectByPrimaryKey(connInfo.connection, connInfo.type, database, table, primaryKey)
+  const flashback = beforeImage
+    ? runtime.buildRowDeleteFlashback({
+        databaseName: database,
+        tableName: table,
+        primaryKey: primaryKey.column,
+        beforeImage,
+      })
+    : null
   try {
     await deleteRow(connInfo.connection, connInfo.type, database, table, primaryKey)
-    return { success: true, message: '删除成功' }
-  } catch (e) {
-    return { success: false, message: e.message }
+    const auditRecord = await recordGovernedMutation({
+      runtime,
+      operationKind: 'row-delete',
+      source: 'table-editor',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName: table,
+      primaryKey,
+      classification: 'DML',
+      statementType: 'DELETE',
+      riskLevel: enforcement.riskLevel,
+      success: true,
+      affectedRows: 1,
+      durationMs: Date.now() - startedAt,
+      flashback,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+    })
+    return { success: true, message: '删除成功', governance: auditRecord ? { ...enforcement.governance, flashback: auditRecord.flashback } : enforcement.governance }
+  } catch (error) {
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'row-delete',
+      source: 'table-editor',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName: table,
+      primaryKey,
+      classification: 'DML',
+      statementType: 'DELETE',
+      riskLevel: enforcement.riskLevel,
+      success: false,
+      error,
+      durationMs: Date.now() - startedAt,
+      flashback,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+    })
+    return { success: false, message: error.message }
   }
 })
 
-ipcMain.handle('db:insertRow', async (event, id, database, table, columns, values) => {
+ipcMain.handle('db:insertRow', async (event, id, database, table, columns, values, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
-  if (!connInfo) return { success: false, message: '连接不存在或已断开，请重新连接' }
+  if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€锛岃閲嶆柊杩炴帴' }
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+  const enforcement = await enforceStructuredGovernance({
+    runtime,
+    startedAt,
+    operationKind: 'row-insert',
+    source: 'table-editor',
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName: database,
+    tableName: table,
+    classification: 'DML',
+    statementType: 'ROW_INSERT',
+    approval: governanceOptions,
+    flashbackReasonCodes: ['insert-flashback-not-supported'],
+  })
+  if (enforcement.blocked) {
+    return enforcement.response
+  }
 
   try {
     const result = await insertRow(connInfo.connection, connInfo.type, database, table, columns, values)
-    return { success: true, message: '插入成功', insertId: result?.insertId }
-  } catch (e) {
-    return { success: false, message: e.message }
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'row-insert',
+      source: 'table-editor',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName: table,
+      classification: 'DML',
+      statementType: 'INSERT',
+      riskLevel: enforcement.riskLevel,
+      success: true,
+      affectedRows: 1,
+      durationMs: Date.now() - startedAt,
+      flashbackReasonCodes: ['insert-flashback-not-supported'],
+      classifierNotes: ['table-insert'],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+    })
+    return { success: true, message: '插入成功', insertId: result?.insertId, governance: enforcement.governance }
+  } catch (error) {
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'row-insert',
+      source: 'table-editor',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName: table,
+      classification: 'DML',
+      statementType: 'INSERT',
+      riskLevel: enforcement.riskLevel,
+      success: false,
+      error,
+      durationMs: Date.now() - startedAt,
+      flashbackReasonCodes: ['insert-flashback-not-supported'],
+      classifierNotes: ['table-insert'],
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+    })
+    return { success: false, message: error.message }
   }
 })
 
-// ============ 数据库管理操作 ============
+// ============ 鏁版嵁搴撶鐞嗘搷浣?============
 
-// 创建数据库
-ipcMain.handle('db:createDatabase', async (event, id, dbName, charset = 'utf8mb4', collation = 'utf8mb4_general_ci') => {
+// 鍒涘缓鏁版嵁搴?
+ipcMain.handle('db:createDatabase', async (event, id, dbName, charset = 'utf8mb4', collation = 'utf8mb4_general_ci', governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
-  if (!connInfo) return { success: false, message: '连接不存在或已断开' }
+  if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+  const enforcement = await enforceStructuredGovernance({
+    runtime,
+    startedAt,
+    operationKind: 'create-database',
+    source: 'schema-browser',
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName: dbName,
+    classification: 'DDL',
+    statementType: 'CREATE_DATABASE',
+    approval: governanceOptions,
+    flashbackReasonCodes: ['schema-operation-not-supported'],
+  })
+  if (enforcement.blocked) {
+    return enforcement.response
+  }
 
   try {
     switch (connInfo.type) {
@@ -571,23 +1286,81 @@ ipcMain.handle('db:createDatabase', async (event, id, dbName, charset = 'utf8mb4
         await connInfo.connection.request().query(`CREATE DATABASE [${dbName}]`)
         break
       case 'mongodb':
-        // MongoDB 会在首次插入时自动创建数据库
+        // MongoDB 浼氬湪棣栨鎻掑叆鏃惰嚜鍔ㄥ垱寤烘暟鎹簱
         await connInfo.connection.db(dbName).createCollection('_init_')
         await connInfo.connection.db(dbName).dropCollection('_init_')
         break
       default:
-        return { success: false, message: '该数据库类型不支持此操作' }
+        return { success: false, message: '璇ユ暟鎹簱绫诲瀷涓嶆敮鎸佹鎿嶄綔' }
     }
-    return { success: true, message: '数据库创建成功' }
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'create-database',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: dbName,
+      classification: 'DDL',
+      statementType: 'CREATE_DATABASE',
+      riskLevel: enforcement.riskLevel,
+      success: true,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
+    return { success: true, message: '数据库创建成功', governance: enforcement.governance }
   } catch (e) {
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'create-database',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: dbName,
+      classification: 'DDL',
+      statementType: 'CREATE_DATABASE',
+      riskLevel: enforcement.riskLevel,
+      success: false,
+      error: e,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
     return { success: false, message: e.message }
   }
 })
 
-// 删除数据库
-ipcMain.handle('db:dropDatabase', async (event, id, dbName) => {
+// 鍒犻櫎鏁版嵁搴?
+ipcMain.handle('db:dropDatabase', async (event, id, dbName, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
-  if (!connInfo) return { success: false, message: '连接不存在或已断开' }
+  if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+  const enforcement = await enforceStructuredGovernance({
+    runtime,
+    startedAt,
+    operationKind: 'drop-database',
+    source: 'schema-browser',
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName: dbName,
+    classification: 'DDL',
+    statementType: 'DROP_DATABASE',
+    approval: governanceOptions,
+    highRiskReasons: ['drop-database'],
+    flashbackReasonCodes: ['schema-operation-not-supported'],
+  })
+  if (enforcement.blocked) {
+    return enforcement.response
+  }
 
   try {
     switch (connInfo.type) {
@@ -606,20 +1379,80 @@ ipcMain.handle('db:dropDatabase', async (event, id, dbName) => {
         await connInfo.connection.db(dbName).dropDatabase()
         break
       default:
-        return { success: false, message: '该数据库类型不支持此操作' }
+        return { success: false, message: '璇ユ暟鎹簱绫诲瀷涓嶆敮鎸佹鎿嶄綔' }
     }
-    return { success: true, message: '数据库删除成功' }
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'drop-database',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: dbName,
+      classification: 'DDL',
+      statementType: 'DROP_DATABASE',
+      riskLevel: enforcement.riskLevel,
+      success: true,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      highRiskReasons: ['drop-database'],
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
+    return { success: true, message: '数据库删除成功', governance: enforcement.governance }
   } catch (e) {
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'drop-database',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: dbName,
+      classification: 'DDL',
+      statementType: 'DROP_DATABASE',
+      riskLevel: enforcement.riskLevel,
+      success: false,
+      error: e,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      highRiskReasons: ['drop-database'],
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
     return { success: false, message: e.message }
   }
 })
 
-// ============ 表管理操作 ============
+// ============ 琛ㄧ鐞嗘搷浣?============
 
-// 创建表
-ipcMain.handle('db:createTable', async (event, id, database, tableName, columns) => {
+// 鍒涘缓琛?
+ipcMain.handle('db:createTable', async (event, id, database, tableName, columns, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
-  if (!connInfo) return { success: false, message: '连接不存在或已断开' }
+  if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+  const enforcement = await enforceStructuredGovernance({
+    runtime,
+    startedAt,
+    operationKind: 'create-table',
+    source: 'schema-browser',
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName: database,
+    tableName,
+    classification: 'DDL',
+    statementType: 'CREATE_TABLE',
+    approval: governanceOptions,
+    flashbackReasonCodes: ['schema-operation-not-supported'],
+  })
+  if (enforcement.blocked) {
+    return enforcement.response
+  }
 
   try {
     // columns: [{ name, type, nullable, primaryKey, autoIncrement, defaultValue, comment }]
@@ -694,18 +1527,79 @@ ipcMain.handle('db:createTable', async (event, id, database, tableName, columns)
         break
       }
       default:
-        return { success: false, message: '该数据库类型不支持此操作' }
+        return { success: false, message: '璇ユ暟鎹簱绫诲瀷涓嶆敮鎸佹鎿嶄綔' }
     }
-    return { success: true, message: '表创建成功' }
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'create-table',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName,
+      classification: 'DDL',
+      statementType: 'CREATE_TABLE',
+      riskLevel: enforcement.riskLevel,
+      success: true,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
+    return { success: true, message: '表创建成功', governance: enforcement.governance }
   } catch (e) {
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'create-table',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName,
+      classification: 'DDL',
+      statementType: 'CREATE_TABLE',
+      riskLevel: enforcement.riskLevel,
+      success: false,
+      error: e,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
     return { success: false, message: e.message }
   }
 })
 
-// 删除表
-ipcMain.handle('db:dropTable', async (event, id, database, tableName) => {
+// 鍒犻櫎琛?
+ipcMain.handle('db:dropTable', async (event, id, database, tableName, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
-  if (!connInfo) return { success: false, message: '连接不存在或已断开' }
+  if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+  const enforcement = await enforceStructuredGovernance({
+    runtime,
+    startedAt,
+    operationKind: 'drop-table',
+    source: 'schema-browser',
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName: database,
+    tableName,
+    classification: 'DDL',
+    statementType: 'DROP_TABLE',
+    approval: governanceOptions,
+    highRiskReasons: ['drop-table'],
+    flashbackReasonCodes: ['schema-operation-not-supported'],
+  })
+  if (enforcement.blocked) {
+    return enforcement.response
+  }
 
   try {
     switch (connInfo.type) {
@@ -727,18 +1621,85 @@ ipcMain.handle('db:dropTable', async (event, id, database, tableName) => {
         await connInfo.connection.db(database).dropCollection(tableName)
         break
       default:
-        return { success: false, message: '该数据库类型不支持此操作' }
+        return { success: false, message: '璇ユ暟鎹簱绫诲瀷涓嶆敮鎸佹鎿嶄綔' }
     }
-    return { success: true, message: '表删除成功' }
-  } catch (e) {
-    return { success: false, message: e.message }
+    const auditRecord = await recordGovernedMutation({
+      runtime,
+      operationKind: 'drop-table',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName,
+      classification: 'DDL',
+      statementType: 'DROP_TABLE',
+      riskLevel: enforcement.riskLevel,
+      success: true,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      highRiskReasons: ['drop-table'],
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
+    return {
+      success: true,
+      message: '表删除成功',
+      governance: auditRecord ? { ...enforcement.governance, flashback: auditRecord.flashback } : enforcement.governance,
+    }
+  } catch (error) {
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'drop-table',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName,
+      classification: 'DDL',
+      statementType: 'DROP_TABLE',
+      riskLevel: enforcement.riskLevel,
+      success: false,
+      error,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      highRiskReasons: ['drop-table'],
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
+    return { success: false, message: error.message }
   }
 })
 
-// 清空表
-ipcMain.handle('db:truncateTable', async (event, id, database, tableName) => {
+// 娓呯┖琛?
+ipcMain.handle('db:truncateTable', async (event, id, database, tableName, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
-  if (!connInfo) return { success: false, message: '连接不存在或已断开' }
+  if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+  const enforcement = await enforceStructuredGovernance({
+    runtime,
+    startedAt,
+    operationKind: 'truncate-table',
+    source: 'schema-browser',
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName: database,
+    tableName,
+    classification: 'DDL',
+    statementType: 'TRUNCATE_TABLE',
+    approval: governanceOptions,
+    highRiskReasons: ['truncate-table'],
+    flashbackReasonCodes: ['schema-operation-not-supported'],
+  })
+  if (enforcement.blocked) {
+    return enforcement.response
+  }
 
   try {
     switch (connInfo.type) {
@@ -761,18 +1722,84 @@ ipcMain.handle('db:truncateTable', async (event, id, database, tableName) => {
         await connInfo.connection.db(database).collection(tableName).deleteMany({})
         break
       default:
-        return { success: false, message: '该数据库类型不支持此操作' }
+        return { success: false, message: '璇ユ暟鎹簱绫诲瀷涓嶆敮鎸佹鎿嶄綔' }
     }
-    return { success: true, message: '表已清空' }
-  } catch (e) {
-    return { success: false, message: e.message }
+    const auditRecord = await recordGovernedMutation({
+      runtime,
+      operationKind: 'truncate-table',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName,
+      classification: 'DDL',
+      statementType: 'TRUNCATE_TABLE',
+      riskLevel: enforcement.riskLevel,
+      success: true,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      highRiskReasons: ['truncate-table'],
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
+    return {
+      success: true,
+      message: '表已清空',
+      governance: auditRecord ? { ...enforcement.governance, flashback: auditRecord.flashback } : enforcement.governance,
+    }
+  } catch (error) {
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'truncate-table',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName,
+      classification: 'DDL',
+      statementType: 'TRUNCATE_TABLE',
+      riskLevel: enforcement.riskLevel,
+      success: false,
+      error,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      highRiskReasons: ['truncate-table'],
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
+    return { success: false, message: error.message }
   }
 })
 
-// 重命名表
-ipcMain.handle('db:renameTable', async (event, id, database, oldName, newName) => {
+// 閲嶅懡鍚嶈〃
+ipcMain.handle('db:renameTable', async (event, id, database, oldName, newName, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
-  if (!connInfo) return { success: false, message: '连接不存在或已断开' }
+  if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+  const enforcement = await enforceStructuredGovernance({
+    runtime,
+    startedAt,
+    operationKind: 'rename-table',
+    source: 'schema-browser',
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName: database,
+    tableName: oldName,
+    classification: 'DDL',
+    statementType: 'RENAME_TABLE',
+    approval: governanceOptions,
+    flashbackReasonCodes: ['schema-operation-not-supported'],
+  })
+  if (enforcement.blocked) {
+    return enforcement.response
+  }
 
   try {
     switch (connInfo.type) {
@@ -794,18 +1821,78 @@ ipcMain.handle('db:renameTable', async (event, id, database, oldName, newName) =
         await connInfo.connection.db(database).collection(oldName).rename(newName)
         break
       default:
-        return { success: false, message: '该数据库类型不支持此操作' }
+        return { success: false, message: '璇ユ暟鎹簱绫诲瀷涓嶆敮鎸佹鎿嶄綔' }
     }
-    return { success: true, message: '表重命名成功' }
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'rename-table',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName: oldName,
+      classification: 'DDL',
+      statementType: 'RENAME_TABLE',
+      riskLevel: enforcement.riskLevel,
+      success: true,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
+    return { success: true, message: '琛ㄩ噸鍛藉悕鎴愬姛', governance: enforcement.governance }
   } catch (e) {
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'rename-table',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName: oldName,
+      classification: 'DDL',
+      statementType: 'RENAME_TABLE',
+      riskLevel: enforcement.riskLevel,
+      success: false,
+      error: e,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
     return { success: false, message: e.message }
   }
 })
 
-// 复制表结构
-ipcMain.handle('db:duplicateTable', async (event, id, database, sourceTable, newTable, withData = false) => {
+// 澶嶅埗琛ㄧ粨鏋?
+ipcMain.handle('db:duplicateTable', async (event, id, database, sourceTable, newTable, withData = false, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
-  if (!connInfo) return { success: false, message: '连接不存在或已断开' }
+  if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+  const enforcement = await enforceStructuredGovernance({
+    runtime,
+    startedAt,
+    operationKind: 'duplicate-table',
+    source: 'schema-browser',
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName: database,
+    tableName: sourceTable,
+    classification: 'DDL',
+    statementType: 'DUPLICATE_TABLE',
+    approval: governanceOptions,
+    flashbackReasonCodes: ['schema-operation-not-supported'],
+  })
+  if (enforcement.blocked) {
+    return enforcement.response
+  }
 
   try {
     switch (connInfo.type) {
@@ -833,18 +1920,78 @@ ipcMain.handle('db:duplicateTable', async (event, id, database, sourceTable, new
         }
         break
       default:
-        return { success: false, message: '该数据库类型不支持此操作' }
+        return { success: false, message: '璇ユ暟鎹簱绫诲瀷涓嶆敮鎸佹鎿嶄綔' }
     }
-    return { success: true, message: '表复制成功' }
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'duplicate-table',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName: sourceTable,
+      classification: 'DDL',
+      statementType: 'DUPLICATE_TABLE',
+      riskLevel: enforcement.riskLevel,
+      success: true,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
+    return { success: true, message: '表复制成功', governance: enforcement.governance }
   } catch (e) {
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'duplicate-table',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName: sourceTable,
+      classification: 'DDL',
+      statementType: 'DUPLICATE_TABLE',
+      riskLevel: enforcement.riskLevel,
+      success: false,
+      error: e,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
     return { success: false, message: e.message }
   }
 })
 
-// 添加列
-ipcMain.handle('db:addColumn', async (event, id, database, tableName, column) => {
+// 娣诲姞鍒?
+ipcMain.handle('db:addColumn', async (event, id, database, tableName, column, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
-  if (!connInfo) return { success: false, message: '连接不存在或已断开' }
+  if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+  const enforcement = await enforceStructuredGovernance({
+    runtime,
+    startedAt,
+    operationKind: 'add-column',
+    source: 'schema-browser',
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName: database,
+    tableName,
+    classification: 'DDL',
+    statementType: 'ADD_COLUMN',
+    approval: governanceOptions,
+    flashbackReasonCodes: ['schema-operation-not-supported'],
+  })
+  if (enforcement.blocked) {
+    return enforcement.response
+  }
 
   try {
     // column: { name, type, nullable, defaultValue, comment, after }
@@ -890,18 +2037,78 @@ ipcMain.handle('db:addColumn', async (event, id, database, tableName, column) =>
         break
       }
       default:
-        return { success: false, message: '该数据库类型不支持此操作' }
+        return { success: false, message: '璇ユ暟鎹簱绫诲瀷涓嶆敮鎸佹鎿嶄綔' }
     }
-    return { success: true, message: '列添加成功' }
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'add-column',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName,
+      classification: 'DDL',
+      statementType: 'ADD_COLUMN',
+      riskLevel: enforcement.riskLevel,
+      success: true,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
+    return { success: true, message: '列添加成功', governance: enforcement.governance }
   } catch (e) {
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'add-column',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName,
+      classification: 'DDL',
+      statementType: 'ADD_COLUMN',
+      riskLevel: enforcement.riskLevel,
+      success: false,
+      error: e,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
     return { success: false, message: e.message }
   }
 })
 
-// 修改列
-ipcMain.handle('db:modifyColumn', async (event, id, database, tableName, oldName, column) => {
+// 淇敼鍒?
+ipcMain.handle('db:modifyColumn', async (event, id, database, tableName, oldName, column, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
-  if (!connInfo) return { success: false, message: '连接不存在或已断开' }
+  if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+  const enforcement = await enforceStructuredGovernance({
+    runtime,
+    startedAt,
+    operationKind: 'modify-column',
+    source: 'schema-browser',
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName: database,
+    tableName,
+    classification: 'DDL',
+    statementType: 'MODIFY_COLUMN',
+    approval: governanceOptions,
+    flashbackReasonCodes: ['schema-operation-not-supported'],
+  })
+  if (enforcement.blocked) {
+    return enforcement.response
+  }
 
   try {
     switch (connInfo.type) {
@@ -918,7 +2125,7 @@ ipcMain.handle('db:modifyColumn', async (event, id, database, tableName, oldName
       }
       case 'postgresql':
       case 'postgres': {
-        // PostgreSQL 需要多条语句
+        // PostgreSQL 闇€瑕佸鏉¤鍙?
         if (oldName !== column.name) {
           await connInfo.connection.query(`ALTER TABLE "${tableName}" RENAME COLUMN "${oldName}" TO "${column.name}"`)
         }
@@ -940,18 +2147,79 @@ ipcMain.handle('db:modifyColumn', async (event, id, database, tableName, oldName
         break
       }
       default:
-        return { success: false, message: '该数据库类型不支持此操作' }
+        return { success: false, message: '璇ユ暟鎹簱绫诲瀷涓嶆敮鎸佹鎿嶄綔' }
     }
-    return { success: true, message: '列修改成功' }
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'modify-column',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName,
+      classification: 'DDL',
+      statementType: 'MODIFY_COLUMN',
+      riskLevel: enforcement.riskLevel,
+      success: true,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
+    return { success: true, message: '列修改成功', governance: enforcement.governance }
   } catch (e) {
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'modify-column',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName,
+      classification: 'DDL',
+      statementType: 'MODIFY_COLUMN',
+      riskLevel: enforcement.riskLevel,
+      success: false,
+      error: e,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
     return { success: false, message: e.message }
   }
 })
 
-// 删除列
-ipcMain.handle('db:dropColumn', async (event, id, database, tableName, columnName) => {
+// 鍒犻櫎鍒?
+ipcMain.handle('db:dropColumn', async (event, id, database, tableName, columnName, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
-  if (!connInfo) return { success: false, message: '连接不存在或已断开' }
+  if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+  const enforcement = await enforceStructuredGovernance({
+    runtime,
+    startedAt,
+    operationKind: 'drop-column',
+    source: 'schema-browser',
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName: database,
+    tableName,
+    classification: 'DDL',
+    statementType: 'DROP_COLUMN',
+    approval: governanceOptions,
+    highRiskReasons: ['drop-column'],
+    flashbackReasonCodes: ['schema-operation-not-supported'],
+  })
+  if (enforcement.blocked) {
+    return enforcement.response
+  }
 
   try {
     switch (connInfo.type) {
@@ -967,20 +2235,61 @@ ipcMain.handle('db:dropColumn', async (event, id, database, tableName, columnNam
         await connInfo.connection.request().query(`ALTER TABLE [${tableName}] DROP COLUMN [${columnName}]`)
         break
       case 'sqlite':
-        // SQLite 不支持直接删除列，需要重建表
-        return { success: false, message: 'SQLite 不支持删除列操作' }
+        // SQLite 涓嶆敮鎸佺洿鎺ュ垹闄ゅ垪锛岄渶瑕侀噸寤鸿〃
+        return { success: false, message: 'SQLite 涓嶆敮鎸佸垹闄ゅ垪鎿嶄綔' }
       default:
-        return { success: false, message: '该数据库类型不支持此操作' }
+        return { success: false, message: '璇ユ暟鎹簱绫诲瀷涓嶆敮鎸佹鎿嶄綔' }
     }
-    return { success: true, message: '列删除成功' }
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'drop-column',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName,
+      classification: 'DDL',
+      statementType: 'DROP_COLUMN',
+      riskLevel: enforcement.riskLevel,
+      success: true,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      highRiskReasons: ['drop-column'],
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
+    return { success: true, message: '列删除成功', governance: enforcement.governance }
   } catch (e) {
+    await recordGovernedMutation({
+      runtime,
+      operationKind: 'drop-column',
+      source: 'schema-browser',
+      connectionId: id,
+      connectionName,
+      databaseType: connInfo.type,
+      databaseName: database,
+      tableName,
+      classification: 'DDL',
+      statementType: 'DROP_COLUMN',
+      riskLevel: enforcement.riskLevel,
+      success: false,
+      error: e,
+      durationMs: Date.now() - startedAt,
+      decision: enforcement.decision,
+      approvedByUser: enforcement.approvedByUser,
+      highRiskReasons: ['drop-column'],
+      decisionNotes: enforcement.decisionNotes,
+      flashbackReasonCodes: ['schema-operation-not-supported'],
+    })
     return { success: false, message: e.message }
   }
 })
 
-// ============ 表设计器相关操作 ============
+// ============ 琛ㄨ璁″櫒鐩稿叧鎿嶄綔 ============
 
-// 获取完整的表信息（字段、索引、外键、选项）
+// 鑾峰彇瀹屾暣鐨勮〃淇℃伅锛堝瓧娈点€佺储寮曘€佸閿€侀€夐」锛?
 ipcMain.handle('db:getTableInfo', async (event, id, database, tableName) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return { columns: [], indexes: [], foreignKeys: [], options: {} }
@@ -988,12 +2297,12 @@ ipcMain.handle('db:getTableInfo', async (event, id, database, tableName) => {
   try {
     return await getTableInfo(connInfo.connection, connInfo.type, database, tableName)
   } catch (e) {
-    console.error('获取表信息失败:', e)
+    console.error('鑾峰彇琛ㄤ俊鎭け璐?', e)
     return { columns: [], indexes: [], foreignKeys: [], options: {} }
   }
 })
 
-// 获取索引
+// 鑾峰彇绱㈠紩
 ipcMain.handle('db:getIndexes', async (event, id, database, tableName) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return []
@@ -1001,12 +2310,12 @@ ipcMain.handle('db:getIndexes', async (event, id, database, tableName) => {
   try {
     return await getIndexes(connInfo.connection, connInfo.type, database, tableName)
   } catch (e) {
-    console.error('获取索引失败:', e)
+    console.error('鑾峰彇绱㈠紩澶辫触:', e)
     return []
   }
 })
 
-// 获取外键
+// 鑾峰彇澶栭敭
 ipcMain.handle('db:getForeignKeys', async (event, id, database, tableName) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return []
@@ -1014,12 +2323,12 @@ ipcMain.handle('db:getForeignKeys', async (event, id, database, tableName) => {
   try {
     return await getForeignKeys(connInfo.connection, connInfo.type, database, tableName)
   } catch (e) {
-    console.error('获取外键失败:', e)
+    console.error('鑾峰彇澶栭敭澶辫触:', e)
     return []
   }
 })
 
-// 获取表的列名（简化版，用于外键选择）
+// 鑾峰彇琛ㄧ殑鍒楀悕锛堢畝鍖栫増锛岀敤浜庡閿€夋嫨锛?
 ipcMain.handle('db:getColumnNames', async (event, id, database, tableName) => {
   const connInfo = await ensureConnection(id)
   if (!connInfo) return []
@@ -1027,34 +2336,81 @@ ipcMain.handle('db:getColumnNames', async (event, id, database, tableName) => {
   try {
     return await getColumnNames(connInfo.connection, connInfo.type, database, tableName)
   } catch (e) {
-    console.error('获取列名失败:', e)
+    console.error('鑾峰彇鍒楀悕澶辫触:', e)
     return []
   }
 })
 
-// 执行多条 SQL（用于表设计器保存）
-ipcMain.handle('db:executeMultiSQL', async (event, id, sqls) => {
+// 鎵ц澶氭潯 SQL锛堢敤浜庤〃璁捐鍣ㄤ繚瀛橈級
+ipcMain.handle('db:executeMultiSQL', async (event, id, sqls, governanceOptions = {}) => {
   const connInfo = await ensureConnection(id)
-  if (!connInfo) return { success: false, message: '连接不存在或已断开' }
+  if (!connInfo) return { success: false, message: '杩炴帴涓嶅瓨鍦ㄦ垨宸叉柇寮€' }
+  const runtime = ensureGovernanceRuntime()
+  const startedAt = Date.now()
+  const connectionName = getConnectionDisplayName(id, connInfo)
+  const databaseName = getConnectionDatabaseName(connInfo)
+  const governance = await runtime.beginRawSqlOperation({
+    connectionId: id,
+    connectionName,
+    databaseType: connInfo.type,
+    databaseName,
+    source: 'schema-browser',
+    sqlText: sqls,
+    approval: governanceOptions,
+  })
+  if (!governance.allowExecution) {
+    return {
+      success: false,
+      message: governance.response?.error || 'Governance blocked operation',
+      governance: governance.response?.governance,
+    }
+  }
 
   try {
-    // 将 SQL 语句按分号分割并逐条执行
-    const statements = sqls.split(';').map(s => s.trim()).filter(s => s.length > 0 && !s.startsWith('--'))
-    
+    const split = splitSqlStatements(sqls)
+    if (!split.ok || split.statements.length === 0) {
+      const failed = await runtime.failRawSqlOperation({
+        auditRecord: governance.auditRecord,
+        error: new Error('Unable to parse SQL statements for execution'),
+        durationMs: Date.now() - startedAt,
+      })
+      return {
+        success: false,
+        message: failed.result.error || 'Unable to parse SQL statements for execution',
+        governance: failed.result.governance,
+      }
+    }
+
+    const statements = split.statements.map((statement) => statement.trim()).filter((statement) => statement.length > 0)
     for (const sql of statements) {
       await executeQuery(connInfo.connection, connInfo.type, sql)
     }
-    
-    return { success: true, message: '执行成功' }
+
+    const completed = await runtime.completeRawSqlOperation({
+      auditRecord: governance.auditRecord,
+      result: {
+        columns: [],
+        rows: [],
+        affectedRows: statements.length,
+      },
+      durationMs: Date.now() - startedAt,
+    })
+
+    return { success: true, message: '鎵ц鎴愬姛', governance: completed.result.governance }
   } catch (e) {
-    return { success: false, message: e.message }
+    const failed = await runtime.failRawSqlOperation({
+      auditRecord: governance.auditRecord,
+      error: e,
+      durationMs: Date.now() - startedAt,
+    })
+    return { success: false, message: e.message, governance: failed.result.governance }
   }
 })
 
-// ============ 文件操作 ============
+// ============ 鏂囦欢鎿嶄綔 ============
 ipcMain.handle('file:open', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
-    filters: [{ name: 'SQL 文件', extensions: ['sql'] }],
+    filters: [{ name: 'SQL 鏂囦欢', extensions: ['sql'] }],
     properties: ['openFile']
   })
 
@@ -1074,7 +2430,7 @@ ipcMain.handle('file:save', async (event, filePath, content) => {
 
   if (!targetPath) {
     const result = await dialog.showSaveDialog(mainWindow, {
-      filters: [{ name: 'SQL 文件', extensions: ['sql'] }]
+      filters: [{ name: 'SQL 鏂囦欢', extensions: ['sql'] }]
     })
 
     if (result.canceled) {
@@ -1091,7 +2447,7 @@ ipcMain.handle('file:save', async (event, filePath, content) => {
 
 ipcMain.handle('file:select', async (event, extensions) => {
   const result = await dialog.showOpenDialog(mainWindow, {
-    filters: extensions ? [{ name: '数据库文件', extensions }] : undefined,
+    filters: extensions ? [{ name: '数据文件', extensions }] : undefined,
     properties: ['openFile']
   })
 
@@ -1126,50 +2482,50 @@ ipcMain.handle('file:read', async (event, filePath) => {
   }
 })
 
-// ============ Navicat 密码解密 ============
-// 支持 Navicat 11 和 Navicat 12+ 的密码解密
+// ============ Navicat 瀵嗙爜瑙ｅ瘑 ============
+// 鏀寔 Navicat 11 鍜?Navicat 12+ 鐨勫瘑鐮佽В瀵?
 ipcMain.handle('crypto:decryptNavicatPassword', async (event, encryptedPassword, version = 12) => {
   try {
     if (!encryptedPassword) return ''
     
-    // 尝试所有解密方法
+    // 灏濊瘯鎵€鏈夎В瀵嗘柟娉?
     let result = ''
     
-    // 首先尝试 Navicat 12+ (AES-128-CBC)
+    // 棣栧厛灏濊瘯 Navicat 12+ (AES-128-CBC)
     result = decryptNavicat12(encryptedPassword)
     if (result && isPrintableString(result)) {
-      console.log('Navicat 12 AES 解密成功')
+      console.log('Navicat 12 AES 瑙ｅ瘑鎴愬姛')
       return result
     }
     
-    // 尝试 Navicat 11 (Blowfish/XOR)
+    // 灏濊瘯 Navicat 11 (Blowfish/XOR)
     result = decryptNavicat11(encryptedPassword)
     if (result && isPrintableString(result)) {
-      console.log('Navicat 11 解密成功')
+      console.log('Navicat 11 瑙ｅ瘑鎴愬姛')
       return result
     }
     
-    // 如果都失败，返回空字符串
-    console.warn('所有解密方法都失败，密码可能使用了不支持的加密方式')
+    // 濡傛灉閮藉け璐ワ紝杩斿洖绌哄瓧绗︿覆
+    console.warn('鎵€鏈夎В瀵嗘柟娉曢兘澶辫触锛屽瘑鐮佸彲鑳戒娇鐢ㄤ簡涓嶆敮鎸佺殑鍔犲瘑鏂瑰紡')
     return ''
   } catch (e) {
-    console.error('Navicat 密码解密失败:', e.message)
+    console.error('Navicat 瀵嗙爜瑙ｅ瘑澶辫触:', e.message)
     return ''
   }
 })
 
-// 检查字符串是否为可打印字符
+// 妫€鏌ュ瓧绗︿覆鏄惁涓哄彲鎵撳嵃瀛楃
 function isPrintableString(str) {
   if (!str || str.length === 0) return false
-  // 检查是否包含合理的可打印字符
+  // 妫€鏌ユ槸鍚﹀寘鍚悎鐞嗙殑鍙墦鍗板瓧绗?
   return /^[\x20-\x7E\u4e00-\u9fa5]+$/.test(str)
 }
 
-// Navicat 12+ AES-128-CBC 解密
+// Navicat 12+ AES-128-CBC 瑙ｅ瘑
 function decryptNavicat12(encryptedPassword) {
-  // Navicat 12 使用 AES-128-CBC
-  // 密钥: libcckeylibcckey (16 bytes)
-  // IV: 多种可能的格式
+  // Navicat 12 浣跨敤 AES-128-CBC
+  // 瀵嗛挜: libcckeylibcckey (16 bytes)
+  // IV: 澶氱鍙兘鐨勬牸寮?
   
   try {
     const encryptedBuffer = Buffer.from(encryptedPassword, 'hex')
@@ -1178,19 +2534,19 @@ function decryptNavicat12(encryptedPassword) {
       return ''
     }
     
-    // 尝试多种可能的密钥和 IV 组合
+    // 灏濊瘯澶氱鍙兘鐨勫瘑閽ュ拰 IV 缁勫悎
     const attempts = [
-      // 组合 1: IV 作为 UTF-8 字符串
+      // 缁勫悎 1: IV 浣滀负 UTF-8 瀛楃涓?
       { key: 'libcckeylibcckey', iv: Buffer.from('d0288c8e24342312', 'utf8') },
-      // 组合 2: IV 重复两次的十六进制
+      // 缁勫悎 2: IV 閲嶅涓ゆ鐨勫崄鍏繘鍒?
       { key: 'libcckeylibcckey', iv: Buffer.from('d0288c8e24342312d0288c8e24342312', 'hex') },
-      // 组合 3: 字节数组 IV
+      // 缁勫悎 3: 瀛楄妭鏁扮粍 IV
       { key: 'libcckeylibcckey', iv: Buffer.from([0xD0, 0x28, 0x8C, 0x8E, 0x24, 0x34, 0x23, 0x12, 0xD0, 0x28, 0x8C, 0x8E, 0x24, 0x34, 0x23, 0x12]) },
-      // 组合 4: 全零 IV
+      // 缁勫悎 4: 鍏ㄩ浂 IV
       { key: 'libcckeylibcckey', iv: Buffer.alloc(16, 0) },
-      // 组合 5: libcciv 作为 IV
+      // 缁勫悎 5: libcciv 浣滀负 IV
       { key: 'libcckeylibcckey', iv: Buffer.from('libcciv libcciv ', 'utf8') },
-      // 组合 6: 反向字节序
+      // 缁勫悎 6: 鍙嶅悜瀛楄妭搴?
       { key: 'libcckeylibcckey', iv: Buffer.from([0x12, 0x23, 0x34, 0x24, 0x8E, 0x8C, 0x28, 0xD0, 0x12, 0x23, 0x34, 0x24, 0x8E, 0x8C, 0x28, 0xD0]) },
     ]
     
@@ -1210,10 +2566,10 @@ function decryptNavicat12(encryptedPassword) {
           return result
         }
       } catch (e) {
-        // 继续尝试下一个组合
+        // 缁х画灏濊瘯涓嬩竴涓粍鍚?
       }
       
-      // 尝试关闭自动填充
+      // 灏濊瘯鍏抽棴鑷姩濉厖
       try {
         const keyBuffer = Buffer.from(attempt.key, 'utf8')
         const decipher = crypto.createDecipheriv('aes-128-cbc', keyBuffer, attempt.iv)
@@ -1224,10 +2580,10 @@ function decryptNavicat12(encryptedPassword) {
           decipher.final()
         ])
         
-        // 手动移除填充
+        // 鎵嬪姩绉婚櫎濉厖
         const paddingLen = decrypted[decrypted.length - 1]
         if (paddingLen > 0 && paddingLen <= 16) {
-          // 验证填充是否正确
+          // 楠岃瘉濉厖鏄惁姝ｇ‘
           let validPadding = true
           for (let i = 0; i < paddingLen; i++) {
             if (decrypted[decrypted.length - 1 - i] !== paddingLen) {
@@ -1245,7 +2601,7 @@ function decryptNavicat12(encryptedPassword) {
           return result
         }
       } catch (e) {
-        // 继续尝试下一个组合
+        // 缁х画灏濊瘯涓嬩竴涓粍鍚?
       }
     }
     
@@ -1255,7 +2611,7 @@ function decryptNavicat12(encryptedPassword) {
   }
 }
 
-// Navicat 11 解密 - 使用 Blowfish ECB
+// Navicat 11 瑙ｅ瘑 - 浣跨敤 Blowfish ECB
 function decryptNavicat11(encryptedPassword) {
   try {
     const encryptedBuffer = Buffer.from(encryptedPassword, 'hex')
@@ -1264,8 +2620,8 @@ function decryptNavicat11(encryptedPassword) {
       return ''
     }
     
-    // 方法 1: 使用 Blowfish ECB 模式
-    // Navicat 11 密钥是 SHA1("3DC5CA39") 的前 8 字节
+    // 鏂规硶 1: 浣跨敤 Blowfish ECB 妯″紡
+    // Navicat 11 瀵嗛挜鏄?SHA1("3DC5CA39") 鐨勫墠 8 瀛楄妭
     const keyStr = '3DC5CA39'
     const sha1Key = crypto.createHash('sha1').update(keyStr).digest()
     const blowfishKey = sha1Key.slice(0, 8)
@@ -1275,27 +2631,27 @@ function decryptNavicat11(encryptedPassword) {
       const decrypted = bf.decode(encryptedBuffer, Blowfish.TYPE.UINT8_ARRAY)
       const result = Buffer.from(decrypted).toString('utf8').replace(/\0+$/, '')
       if (result && isPrintableString(result)) {
-        console.log('Blowfish ECB 解密成功')
+        console.log('Blowfish ECB 瑙ｅ瘑鎴愬姛')
         return result
       }
     } catch (e) {
-      // 继续尝试其他方法
+      // 缁х画灏濊瘯鍏朵粬鏂规硶
     }
     
-    // 方法 2: 直接使用密钥字符串作为 Blowfish 密钥
+    // 鏂规硶 2: 鐩存帴浣跨敤瀵嗛挜瀛楃涓蹭綔涓?Blowfish 瀵嗛挜
     try {
       const bf = new Blowfish(keyStr, Blowfish.MODE.ECB, Blowfish.PADDING.NULL)
       const decrypted = bf.decode(encryptedBuffer, Blowfish.TYPE.UINT8_ARRAY)
       const result = Buffer.from(decrypted).toString('utf8').replace(/\0+$/, '')
       if (result && isPrintableString(result)) {
-        console.log('Blowfish ECB (direct key) 解密成功')
+        console.log('Blowfish ECB (direct key) 瑙ｅ瘑鎴愬姛')
         return result
       }
     } catch (e) {
-      // 继续尝试其他方法
+      // 缁х画灏濊瘯鍏朵粬鏂规硶
     }
     
-    // 方法 3: XOR 解密（作为后备）
+    // 鏂规硶 3: XOR 瑙ｅ瘑锛堜綔涓哄悗澶囷級
     const sha1Hash = crypto.createHash('sha1').update(keyStr).digest()
     let result = Buffer.alloc(encryptedBuffer.length)
     for (let i = 0; i < encryptedBuffer.length; i++) {
@@ -1307,7 +2663,7 @@ function decryptNavicat11(encryptedPassword) {
       return decrypted
     }
     
-    // 方法 4: Navicat 特定的 XOR 序列
+    // 鏂规硶 4: Navicat 鐗瑰畾鐨?XOR 搴忓垪
     result = navicatXorDecrypt(encryptedBuffer)
     decrypted = result.toString('utf8').replace(/\0+$/, '')
     if (decrypted && isPrintableString(decrypted)) {
@@ -1316,14 +2672,14 @@ function decryptNavicat11(encryptedPassword) {
     
     return ''
   } catch (e) {
-    console.error('Navicat 11 解密错误:', e.message)
+    console.error('Navicat 11 瑙ｅ瘑閿欒:', e.message)
     return ''
   }
 }
 
-// Navicat 特定的 XOR 解密算法
+// Navicat 鐗瑰畾鐨?XOR 瑙ｅ瘑绠楁硶
 function navicatXorDecrypt(encryptedBuffer) {
-  // Navicat 使用特定的 XOR 序列
+  // Navicat 浣跨敤鐗瑰畾鐨?XOR 搴忓垪
   const xorKey = Buffer.from([
     0x42, 0xCE, 0xB2, 0x71, 0xA5, 0xE4, 0x58, 0xB7,
     0x4E, 0x13, 0xEA, 0x1C, 0x91, 0x67, 0xA3, 0x6D
@@ -1337,26 +2693,26 @@ function navicatXorDecrypt(encryptedBuffer) {
   return result
 }
 
-// ============ 数据库连接辅助函数 ============
+// ============ 鏁版嵁搴撹繛鎺ヨ緟鍔╁嚱鏁?============
 async function createConnection(config, connectionId = null) {
   let { type, host, port, username, password, database } = config
-  const originalHost = host  // 保存原始 host（SQLite 需要用）
+  const originalHost = host  // 淇濆瓨鍘熷 host锛圫QLite 闇€瑕佺敤锛?
   
-  // 如果启用了 SSH 隧道，先建立隧道
+  // 濡傛灉鍚敤浜?SSH 闅ч亾锛屽厛寤虹珛闅ч亾
   let tunnel = null
   if (config.sshEnabled && config.sshHost) {
-    console.log(`[DB] 为连接创建 SSH 隧道...`)
+    console.log(`[DB] 涓鸿繛鎺ュ垱寤?SSH 闅ч亾...`)
     try {
       tunnel = await createSSHTunnel(config)
       host = tunnel.localHost
       port = tunnel.localPort
       
-      // 保存隧道（正式连接时）
+      // 淇濆瓨闅ч亾锛堟寮忚繛鎺ユ椂锛?
       if (connectionId) {
         sshTunnels.set(connectionId, tunnel)
       }
     } catch (e) {
-      throw new Error(`SSH 隧道失败: ${e.message}`)
+      throw new Error(`SSH 闅ч亾澶辫触: ${e.message}`)
     }
   }
 
@@ -1394,7 +2750,7 @@ async function createConnection(config, connectionId = null) {
 
       case 'sqlite': {
         await initSqlite()
-        const dbPath = originalHost || database  // SQLite 用原始路径
+        const dbPath = originalHost || database  // SQLite 鐢ㄥ師濮嬭矾寰?
         let dbData = null
         
         if (dbPath && fs.existsSync(dbPath)) {
@@ -1455,17 +2811,17 @@ async function createConnection(config, connectionId = null) {
       }
 
       default:
-        throw new Error(`不支持的数据库类型: ${type}`)
+        throw new Error(`涓嶆敮鎸佺殑鏁版嵁搴撶被鍨? ${type}`)
     }
     
-    // 测试连接时，将隧道附加到连接对象
+    // 娴嬭瘯杩炴帴鏃讹紝灏嗛毀閬撻檮鍔犲埌杩炴帴瀵硅薄
     if (tunnel && !connectionId) {
       conn._sshTunnel = tunnel
     }
     
     return conn
   } catch (e) {
-    // 连接失败时清理隧道
+    // 杩炴帴澶辫触鏃舵竻鐞嗛毀閬?
     if (tunnel) {
       try {
         if (tunnel.server) tunnel.server.close()
@@ -1479,7 +2835,7 @@ async function createConnection(config, connectionId = null) {
 
 async function closeConnection(conn, type, connectionId = null) {
   try {
-    // 关闭数据库连接
+    // 鍏抽棴鏁版嵁搴撹繛鎺?
     switch (type) {
       case 'mysql':
       case 'mariadb':
@@ -1507,7 +2863,7 @@ async function closeConnection(conn, type, connectionId = null) {
         break
     }
     
-    // 关闭测试连接的 SSH 隧道
+    // 鍏抽棴娴嬭瘯杩炴帴鐨?SSH 闅ч亾
     if (conn._sshTunnel) {
       try {
         if (conn._sshTunnel.server) conn._sshTunnel.server.close()
@@ -1515,12 +2871,12 @@ async function closeConnection(conn, type, connectionId = null) {
       } catch (e) {}
     }
     
-    // 关闭正式连接的 SSH 隧道
+    // 鍏抽棴姝ｅ紡杩炴帴鐨?SSH 闅ч亾
     if (connectionId) {
       closeSSHTunnel(connectionId)
     }
   } catch (e) {
-    console.error('关闭连接时出错:', e)
+    console.error('鍏抽棴杩炴帴鏃跺嚭閿?', e)
   }
 }
 
@@ -1573,13 +2929,13 @@ async function executeQuery(conn, type, sql) {
     }
 
     case 'mongodb': {
-      // MongoDB 使用简单的命令语法
-      // 示例: db.collection.find({}) 或 collection_name
-      return { columns: [], rows: [], error: 'MongoDB 请使用表浏览功能查看数据' }
+      // MongoDB 浣跨敤绠€鍗曠殑鍛戒护璇硶
+      // 绀轰緥: db.collection.find({}) 鎴?collection_name
+      return { columns: [], rows: [], error: 'MongoDB 璇蜂娇鐢ㄨ〃娴忚鍔熻兘鏌ョ湅鏁版嵁' }
     }
 
     case 'redis': {
-      // Redis 命令执行
+      // Redis 鍛戒护鎵ц
       const parts = sql.trim().split(/\s+/)
       const command = parts[0].toLowerCase()
       const args = parts.slice(1)
@@ -1595,7 +2951,7 @@ async function executeQuery(conn, type, sql) {
     }
 
     default:
-      throw new Error(`不支持的数据库类型: ${type}`)
+      throw new Error(`涓嶆敮鎸佺殑鏁版嵁搴撶被鍨? ${type}`)
   }
 }
 
@@ -1623,9 +2979,9 @@ async function getDatabases(conn, type) {
     }
 
     case 'redis': {
-      // Redis 数据库是数字 0-15
+      // Redis 鏁版嵁搴撴槸鏁板瓧 0-15
       const info = await conn.info('keyspace')
-      const dbs = ['0'] // 至少返回 db0
+      const dbs = ['0'] // 鑷冲皯杩斿洖 db0
       const matches = info.match(/db(\d+)/g)
       if (matches) {
         matches.forEach(m => {
@@ -1705,9 +3061,9 @@ async function getTables(conn, type, database) {
     }
 
     case 'redis': {
-      // 切换到指定数据库
+      // 鍒囨崲鍒版寚瀹氭暟鎹簱
       await conn.select(parseInt(database) || 0)
-      // 获取所有键（前100个作为"表"）
+      // 鑾峰彇鎵€鏈夐敭锛堝墠100涓綔涓?琛?锛?
       const keys = await conn.keys('*')
       const uniquePrefixes = new Set()
       keys.forEach(key => {
@@ -1722,7 +3078,7 @@ async function getTables(conn, type, database) {
     }
 
     case 'sqlserver': {
-      // 切换数据库
+      // 鍒囨崲鏁版嵁搴?
       await conn.request().query(`USE [${database}]`)
       const result = await conn.request().query(`
         SELECT TABLE_NAME as name, TABLE_TYPE as type
@@ -1794,7 +3150,7 @@ async function getColumns(conn, type, database, table) {
     }
 
     case 'mongodb': {
-      // MongoDB 是无模式的，从第一个文档推断字段
+      // MongoDB 鏄棤妯″紡鐨勶紝浠庣涓€涓枃妗ｆ帹鏂瓧娈?
       const db = conn.db(database)
       const doc = await db.collection(table).findOne()
       if (!doc) return []
@@ -1807,7 +3163,7 @@ async function getColumns(conn, type, database, table) {
     }
 
     case 'redis': {
-      // Redis 键没有固定的"列"
+      // Redis 閿病鏈夊浐瀹氱殑"鍒?
       return [
         { name: 'key', type: 'string', nullable: false, key: 'PRI' },
         { name: 'value', type: 'string', nullable: true },
@@ -1839,15 +3195,15 @@ async function getColumns(conn, type, database, table) {
 
 async function getTableData(conn, type, database, table, page = 1, pageSize = 100) {
   const offset = (page - 1) * pageSize
-  console.log(`[getTableData] 开始获取列信息...`)
+  console.log('[getTableData] loading columns')
   const columns = await getColumns(conn, type, database, table)
-  console.log(`[getTableData] 列信息获取完成: ${columns.length} 列`)
+  console.log('[getTableData] columns loaded count=' + columns.length)
 
   switch (type) {
     case 'mysql':
     case 'mariadb': {
-      // 使用表状态获取估算行数（几乎瞬间完成，比 COUNT(*) 快得多）
-      console.log(`[getTableData] 获取表状态估算行数...`)
+      // 浣跨敤琛ㄧ姸鎬佽幏鍙栦及绠楄鏁帮紙鍑犱箮鐬棿瀹屾垚锛屾瘮 COUNT(*) 蹇緱澶氾級
+      console.log('[getTableData] loading estimated row count')
       let total = 0
       try {
         const [statusRows] = await conn.query(
@@ -1855,17 +3211,17 @@ async function getTableData(conn, type, database, table, page = 1, pageSize = 10
           [database, table]
         )
         total = statusRows[0]?.TABLE_ROWS || 0
-        console.log(`[getTableData] 估算行数: ${total}`)
+        console.log(`[getTableData] 浼扮畻琛屾暟: ${total}`)
       } catch (e) {
-        console.log(`[getTableData] 获取估算行数失败，使用0`)
+        console.log('[getTableData] estimate unavailable, continuing')
       }
       
-      console.log(`[getTableData] 执行 SELECT 查询...`)
+      console.log('[getTableData] running select')
       const [rows] = await conn.query(`SELECT * FROM \`${database}\`.\`${table}\` LIMIT ? OFFSET ?`, [pageSize, offset])
-      console.log(`[getTableData] SELECT 完成: ${rows.length} 行`)
+      console.log('[getTableData] select complete rows=' + rows.length)
       const data = rows.map(row => columns.map(col => row[col.name]))
       
-      // 如果实际返回行数小于 pageSize 且是第一页，说明数据量小，使用实际数量
+      // 濡傛灉瀹為檯杩斿洖琛屾暟灏忎簬 pageSize 涓旀槸绗竴椤碉紝璇存槑鏁版嵁閲忓皬锛屼娇鐢ㄥ疄闄呮暟閲?
       if (rows.length < pageSize && page === 1) {
         total = rows.length
       }
@@ -1875,7 +3231,7 @@ async function getTableData(conn, type, database, table, page = 1, pageSize = 10
 
     case 'postgresql':
     case 'postgres': {
-      // 使用 pg_class 获取估算行数（比 COUNT(*) 快得多）
+      // 浣跨敤 pg_class 鑾峰彇浼扮畻琛屾暟锛堟瘮 COUNT(*) 蹇緱澶氾級
       let total = 0
       try {
         const estResult = await conn.query(
@@ -1884,7 +3240,7 @@ async function getTableData(conn, type, database, table, page = 1, pageSize = 10
         )
         total = parseInt(estResult.rows[0]?.estimate) || 0
       } catch (e) {
-        console.log(`[getTableData] PostgreSQL 估算行数失败`)
+        console.log(`[getTableData] PostgreSQL 浼扮畻琛屾暟澶辫触`)
       }
       
       const result = await conn.query(`SELECT * FROM "${table}" LIMIT $1 OFFSET $2`, [pageSize, offset])
@@ -1933,7 +3289,7 @@ async function getTableData(conn, type, database, table, page = 1, pageSize = 10
 
     case 'redis': {
       await conn.select(parseInt(database) || 0)
-      // 获取以 table 为前缀的键
+      // 鑾峰彇浠?table 涓哄墠缂€鐨勯敭
       const pattern = table === '*' ? '*' : `${table}*`
       const allKeys = await conn.keys(pattern)
       const total = allKeys.length
@@ -2018,7 +3374,7 @@ async function updateRow(conn, type, database, table, primaryKey, updates) {
       break
     }
     case 'redis': {
-      // Redis 更新键值
+      // Redis 鏇存柊閿€?
       await conn.select(parseInt(database) || 0)
       const keyType = await conn.type(primaryKey.value)
       if (keyType === 'string' && updates.value !== undefined) {
@@ -2101,7 +3457,7 @@ async function insertRow(conn, type, database, table, columns, values) {
       const colList = columns.map(c => `"${c}"`).join(', ')
       const placeholders = columns.map(() => '?').join(', ')
       conn.run(`INSERT INTO "${table}" (${colList}) VALUES (${placeholders})`, values)
-      // 获取最后插入的行ID
+      // 鑾峰彇鏈€鍚庢彃鍏ョ殑琛孖D
       const stmt = conn.prepare('SELECT last_insert_rowid() as id')
       let insertId = null
       if (stmt.step()) {
@@ -2121,7 +3477,7 @@ async function insertRow(conn, type, database, table, columns, values) {
     }
     case 'redis': {
       await conn.select(parseInt(database) || 0)
-      // Redis: 假设第一个列是键名，第二个列是值
+      // Redis: 鍋囪绗竴涓垪鏄敭鍚嶏紝绗簩涓垪鏄€?
       if (columns.length >= 2) {
         await conn.set(values[0], values[1])
       }
@@ -2140,11 +3496,11 @@ async function insertRow(conn, type, database, table, columns, values) {
       return { insertId: result.recordset[0]?.id }
     }
     default:
-      throw new Error(`不支持的数据库类型: ${type}`)
+      throw new Error(`涓嶆敮鎸佺殑鏁版嵁搴撶被鍨? ${type}`)
   }
 }
 
-// ============ 获取表详细信息（用于表设计器） ============
+// ============ 鑾峰彇琛ㄨ缁嗕俊鎭紙鐢ㄤ簬琛ㄨ璁″櫒锛?============
 async function getTableInfo(conn, type, database, table) {
   const columns = await getColumnsDetailed(conn, type, database, table)
   const indexes = await getIndexes(conn, type, database, table)
@@ -2153,7 +3509,7 @@ async function getTableInfo(conn, type, database, table) {
   return { columns, indexes, foreignKeys, options }
 }
 
-// 获取详细的列信息
+// 鑾峰彇璇︾粏鐨勫垪淇℃伅
 async function getColumnsDetailed(conn, type, database, table) {
   switch (type) {
     case 'mysql':
@@ -2176,7 +3532,7 @@ async function getColumnsDetailed(conn, type, database, table) {
         ORDER BY ORDINAL_POSITION
       `, [database, table])
       return columns.map(c => {
-        // 解析 COLUMN_TYPE 获取长度/小数位
+        // 瑙ｆ瀽 COLUMN_TYPE 鑾峰彇闀垮害/灏忔暟浣?
         const typeMatch = c.columnType.match(/^(\w+)(?:\((\d+)(?:,(\d+))?\))?/)
         const hasUnsigned = c.columnType.includes('unsigned')
         const hasZerofill = c.columnType.includes('zerofill')
@@ -2256,7 +3612,7 @@ async function getColumnsDetailed(conn, type, database, table) {
         WHERE c.TABLE_NAME = '${table}'
         ORDER BY c.ORDINAL_POSITION
       `)
-      // 获取主键
+      // 鑾峰彇涓婚敭
       const pkResult = await conn.request().query(`
         SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
         WHERE TABLE_NAME = '${table}' AND CONSTRAINT_NAME LIKE 'PK%'
@@ -2312,16 +3668,16 @@ async function getColumnsDetailed(conn, type, database, table) {
   }
 }
 
-// 获取索引信息
+// 鑾峰彇绱㈠紩淇℃伅
 async function getIndexes(conn, type, database, table) {
   switch (type) {
     case 'mysql':
     case 'mariadb': {
       const [indexes] = await conn.query(`SHOW INDEX FROM \`${database}\`.\`${table}\``)
-      // 按索引名分组
+      // 鎸夌储寮曞悕鍒嗙粍
       const indexMap = new Map()
       for (const idx of indexes) {
-        if (idx.Key_name === 'PRIMARY') continue // 主键单独处理
+        if (idx.Key_name === 'PRIMARY') continue // 涓婚敭鍗曠嫭澶勭悊
         if (!indexMap.has(idx.Key_name)) {
           indexMap.set(idx.Key_name, {
             id: crypto.randomUUID(),
@@ -2364,7 +3720,7 @@ async function getIndexes(conn, type, database, table) {
     }
 
     case 'sqlserver': {
-      // 使用 STUFF + FOR XML PATH 兼容旧版本 SQL Server (低于 2017)
+      // 浣跨敤 STUFF + FOR XML PATH 鍏煎鏃х増鏈?SQL Server (浣庝簬 2017)
       const result = await conn.request().query(`
         SELECT 
           i.name as name,
@@ -2397,7 +3753,7 @@ async function getIndexes(conn, type, database, table) {
       const indexes = []
       while (stmt.step()) {
         const row = stmt.getAsObject()
-        // 获取索引列
+        // 鑾峰彇绱㈠紩鍒?
         const colStmt = conn.prepare(`PRAGMA index_info("${row.name}")`)
         const columns = []
         while (colStmt.step()) {
@@ -2425,7 +3781,7 @@ async function getIndexes(conn, type, database, table) {
   }
 }
 
-// 获取外键信息
+// 鑾峰彇澶栭敭淇℃伅
 async function getForeignKeys(conn, type, database, table) {
   switch (type) {
     case 'mysql':
@@ -2448,7 +3804,7 @@ async function getForeignKeys(conn, type, database, table) {
         ORDER BY kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
       `, [database, table])
       
-      // 按外键名分组
+      // 鎸夊閿悕鍒嗙粍
       const fkMap = new Map()
       for (const fk of fks) {
         if (!fkMap.has(fk.name)) {
@@ -2549,7 +3905,7 @@ async function getForeignKeys(conn, type, database, table) {
   }
 }
 
-// 获取表选项
+// 鑾峰彇琛ㄩ€夐」
 async function getTableOptions(conn, type, database, table) {
   switch (type) {
     case 'mysql':
@@ -2589,8 +3945,9 @@ async function getTableOptions(conn, type, database, table) {
   }
 }
 
-// 获取表的列名列表（简化版，用于外键选择）
+// 鑾峰彇琛ㄧ殑鍒楀悕鍒楄〃锛堢畝鍖栫増锛岀敤浜庡閿€夋嫨锛?
 async function getColumnNames(conn, type, database, table) {
   const columns = await getColumns(conn, type, database, table)
   return columns.map(c => c.name)
 }
+
